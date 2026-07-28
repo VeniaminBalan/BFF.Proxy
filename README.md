@@ -2,10 +2,10 @@
 
 ## What problem this solves
 
-A public, browser-hosted SPA can't hold a Keycloak client secret, and any token it stores in
-memory, `localStorage`, or `sessionStorage` is reachable by any script running on the page (an
-XSS bug, a compromised dependency, a browser extension). Handing the SPA an OAuth access token at
-all means that token is one XSS away from being stolen.
+A public, browser-hosted SPA can't hold a [Keycloak](https://www.keycloak.org/) client secret, and
+any token it stores in memory, `localStorage`, or `sessionStorage` is reachable by any script
+running on the page (an XSS bug, a compromised dependency, a browser extension). Handing the SPA
+an OAuth access token at all means that token is one XSS away from being stolen.
 
 The **Backend-for-Frontend (BFF) pattern** removes that exposure entirely: the SPA never sees an
 access token, a refresh token, or an ID token. Instead, a server-side component - this project -
@@ -13,6 +13,9 @@ performs the OAuth/OIDC dance with Keycloak on the SPA's behalf, keeps the token
 server-side session store, and talks to the browser using nothing but an `HttpOnly` session
 cookie. The SPA calls the BFF; the BFF calls Keycloak and the downstream API; the browser never
 holds a bearer token.
+
+Multi-tenant organization support (the `org` claim, `/bff/orgs*` endpoints) relies on the
+[Phase Two](https://phasetwo.io/) Keycloak extension for organizations.
 
 This also happens to solve the SPA's CORS problem: instead of the browser calling multiple
 origins (Keycloak, the resource API), it only ever talks to one origin (the BFF), which then fans
