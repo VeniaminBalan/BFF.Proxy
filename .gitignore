@@ -4,6 +4,7 @@
 .serena
 *.idea
 appsettings.Development.json
+.env
 
 ### Csharp ###
 ## Ignore Visual Studio temporary files, build results, and

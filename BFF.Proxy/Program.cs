@@ -10,6 +10,13 @@ await builder.AddBffServicesAsync();
 
 var app = builder.Build();
 
+if (!app.Environment.IsProduction())
+{
+    app.Logger.LogWarning(
+        "Running in {Environment} mode - this configuration is NOT secure and must not be used in production",
+        app.Environment.EnvironmentName);
+}
+
 app.MapDefaultEndpoints();
 
 app.UseRouting();

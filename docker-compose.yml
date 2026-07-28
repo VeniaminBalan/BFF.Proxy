@@ -1,0 +1,32 @@
+services:
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  bff-proxy:
+    build:
+      context: ./BFF.Proxy
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Redis: redis:6379,abortConnect=false
+      Keycloak__realm: ${KEYCLOAK_REALM:?set KEYCLOAK_REALM in .env}
+      Keycloak__auth-server-url: ${KEYCLOAK_AUTH_SERVER_URL:?set KEYCLOAK_AUTH_SERVER_URL in .env}
+      Keycloak__resource: ${KEYCLOAK_CLIENT_ID:?set KEYCLOAK_CLIENT_ID in .env}
+      Keycloak__credentials__secret: ${KEYCLOAK_CLIENT_SECRET:?set KEYCLOAK_CLIENT_SECRET in .env}
+      Cors__AllowedOrigins__0: ${SPA_ORIGIN:-http://localhost:3000}
+      ReverseProxy__Clusters__dotnet-backend-cluster__Destinations__backend1__Address: ${BACKEND_API_URL:?set BACKEND_API_URL in .env}

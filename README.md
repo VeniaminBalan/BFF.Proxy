@@ -224,6 +224,63 @@ The SPA needs to know where the BFF ended up listening (its own base URL, used f
 and as the proxy target for `/api/*` calls) - see [BFF_CLIENT_SETUP.md](BFF_CLIENT_SETUP.md) for
 how to wire a React SPA up to it.
 
+By default `dotnet run` uses the `Development` launch profile, which layers
+`appsettings.Development.json` on top of `appsettings.json` (see `Properties/launchSettings.json`).
+Use that file for local overrides (e.g. `Cors:AllowedOrigins` pointing at your SPA's dev server)
+instead of editing `appsettings.json`.
+
+## Running with Docker
+
+### Build the image
+
+```bash
+docker build -t bff-proxy -f BFF.Proxy/Dockerfile BFF.Proxy
+```
+
+### Run it
+
+```bash
+docker run --rm -p 8080:8080 \
+  -e ASPNETCORE_ENVIRONMENT=Development \
+  -e ConnectionStrings__Redis=host.docker.internal:6379,abortConnect=false \
+  -e Keycloak__realm=<your realm> \
+  -e Keycloak__auth-server-url=http://host.docker.internal:7080 \
+  -e Keycloak__resource=<your client id> \
+  -e Keycloak__credentials__secret=<your client secret> \
+  -e Cors__AllowedOrigins__0=http://localhost:3000 \
+  bff-proxy
+```
+
+Configuration is supplied the same way as any ASP.NET Core app: environment variables using the
+`Section__Key` convention (double underscore for nesting), which override whatever is baked into
+`appsettings.json`. There's no separate Docker-specific configuration mechanism.
+
+### `ASPNETCORE_ENVIRONMENT`
+
+The image defaults to `ASPNETCORE_ENVIRONMENT=Production`. Set it to `Development` (as above) when
+running the container for local development against `localhost` dependencies - this makes the app
+pick up `appsettings.Development.json` in addition to environment variable overrides. Whenever the
+app isn't running as `Production` it logs a startup warning, since a non-Production configuration
+is not secure and must never be used outside local development.
+
+Pre-built images are published to `ghcr.io` on every push to `main` (see
+`.github/workflows/docker-publish.yml`).
+
+### Docker Compose (dev setup)
+
+`docker-compose.yml` at the repo root spins up the BFF alongside a Redis container, wired for
+local development (`ASPNETCORE_ENVIRONMENT=Development`). It still needs a reachable Keycloak
+instance and resource API - point at wherever those are already running (e.g. `localhost` via
+`host.docker.internal`, or another compose project on the same Docker network).
+
+```bash
+cp .env.example .env   # fill in your Keycloak realm/client and backend API URL
+docker compose up --build
+```
+
+The BFF listens on `http://localhost:8080`; Redis is also exposed on `localhost:6379`. See
+`.env.example` for the full list of variables the compose file expects.
+
 ## Why this shape (design rationale)
 
 - **One client, two roles reused deliberately** - the same Keycloak client can be used both for

@@ -4,6 +4,11 @@ WORKDIR /app
 EXPOSE 8080
 EXPOSE 8081
 
+# Defaults to Production. Override with `-e ASPNETCORE_ENVIRONMENT=Development` for local/dev
+# use (relaxed config via appsettings.Development.json) - the app logs a startup warning when
+# running in a non-Production environment since it is not a secure configuration.
+ENV ASPNETCORE_ENVIRONMENT=Production
+
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
