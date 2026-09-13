@@ -21,6 +21,7 @@ docker run --rm -p 8080:8080 \
   -e Keycloak__auth-server-url=http://host.docker.internal:7080 \
   -e Keycloak__resource=<your client id> \
   -e Keycloak__credentials__secret=<your client secret> \
+  -e ReverseProxy__BackendAddress=http://host.docker.internal:6081 \
   bff-proxy-with-spa:local
 ```
 
