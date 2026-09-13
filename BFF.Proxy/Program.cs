@@ -44,5 +44,5 @@ app.MapHealthEndpoint();
 
 app.MapReverseProxy();
 app.MapStaticSpaMounts();
-app.MapFallbackToFile("index.html");
+app.MapSpaFallback();
 app.Run();
