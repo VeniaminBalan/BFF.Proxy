@@ -134,6 +134,38 @@ Only origins listed in `Cors:AllowedOrigins` (the SPA's own origin) are allowed,
 `AllowCredentials()` is required so the session cookie can flow on cross-port requests in local
 dev (the SPA and BFF run on different ports).
 
+### Optionally serving the SPA from the same origin
+
+`Program.cs` unconditionally wires up `UseStaticFiles()` plus a `MapFallbackToFile("index.html")`
+route for any request that doesn't match `/bff/*`, `/api/**`, or another mapped endpoint. Out of
+the box this only serves the placeholder `wwwroot/index.html` committed in this repo ("Sorry,
+nothing here"), so proxy-only deployments are unaffected.
+
+To co-locate a SPA build with the BFF in one container, build a downstream image
+`FROM ghcr.io/<org>/bff-proxy` that copies the SPA's build output over `./wwwroot` (its
+`index.html` overwrites the placeholder). This gives you a same-origin deployment - one
+container, no extra network hop - while keeping `BFF.Proxy` itself generic. CORS and the CSRF
+`/bff/me` token round-trip (below) remain fully configurable either way, since the same image
+also has to support the SPA being hosted on a different origin entirely.
+
+See [`samples/`](samples) for worked examples of building on top of the base image: embedding a
+pre-built or from-source SPA, running it as a pure proxy with a split-origin SPA, and baking
+per-environment config into a downstream image.
+
+#### Mounting more than one SPA
+
+A downstream image isn't limited to one app: any immediate subdirectory of `wwwroot` that has its
+own `index.html` is auto-mounted at `/<subdirectory-name>/...` with its own client-side-routing
+fallback, discovered at startup - no config or environment variables needed on either side. Copy a
+second build into `wwwroot/admin/` (alongside or instead of overwriting the top-level `wwwroot`)
+and it's reachable at `/admin/...`, independently of whatever's served from `/`. See
+[`samples/multi-spa/`](samples/multi-spa) for a worked example.
+
+The one thing this can't fix automatically: each mounted SPA's own build has to be configured
+with a matching base path (e.g. Vite's `base: '/admin/'`) so its bundled asset URLs resolve under
+`/admin/...` instead of assuming it owns the root - that's a frontend-build setting, not something
+the BFF can correct at runtime.
+
 ### Keycloak configuration
 
 Keycloak settings are required, strongly-typed configuration (`KeycloakOptions.cs`), bound from a

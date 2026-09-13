@@ -124,4 +124,25 @@ public static class Extensions
 
         return app;
     }
+
+    // Auto-discovers additional SPAs mounted under wwwroot: any immediate subdirectory with its
+    // own index.html (e.g. wwwroot/admin/index.html) gets a client-side-routing fallback scoped
+    // to its own path prefix (/admin/**), instead of falling through to the root SPA's shell.
+    // No-op if wwwroot doesn't exist or has no such subdirectories.
+    public static WebApplication MapStaticSpaMounts(this WebApplication app)
+    {
+        if (!Directory.Exists(app.Environment.WebRootPath))
+            return app;
+
+        foreach (var dir in Directory.GetDirectories(app.Environment.WebRootPath))
+        {
+            if (!File.Exists(Path.Combine(dir, "index.html")))
+                continue;
+
+            var name = Path.GetFileName(dir);
+            app.MapFallbackToFile($"/{name}/{{**slug}}", $"{name}/index.html");
+        }
+
+        return app;
+    }
 }

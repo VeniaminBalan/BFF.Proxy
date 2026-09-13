@@ -38,5 +38,6 @@ app.MapBackchannelLogoutEndpoint();
 app.MapHealthEndpoint();
 
 app.MapReverseProxy();
+app.MapStaticSpaMounts();
 app.MapFallbackToFile("index.html");
 app.Run();
