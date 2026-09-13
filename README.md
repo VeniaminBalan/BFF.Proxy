@@ -136,8 +136,8 @@ dev (the SPA and BFF run on different ports).
 
 ### Optionally serving the SPA from the same origin
 
-`Program.cs` unconditionally wires up `UseStaticFiles()` plus a `MapFallbackToFile("index.html")`
-route for any request that doesn't match `/bff/*`, `/api/**`, or another mapped endpoint. This
+`Program.cs` unconditionally wires up `UseStaticFiles()` and a custom `MapSpaFallback()` endpoint
+for any request that doesn't match `/bff/*`, `/api/**`, or another mapped endpoint. This
 repo ships no `wwwroot` of its own, so it's a true no-op on the base image: unmatched routes 404
 as normal, and proxy-only deployments are completely unaffected.
 
