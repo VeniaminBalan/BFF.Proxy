@@ -44,7 +44,7 @@ jobs:
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: ./BFF.Proxy
+          context: .
           file: ./BFF.Proxy/Dockerfile
           push: true
           tags: ${{ steps.meta.outputs.tags }}
