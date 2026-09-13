@@ -19,6 +19,13 @@ if (!app.Environment.IsProduction())
 
 app.MapDefaultEndpoints();
 
+app.UseWhen(
+    ctx => !ctx.Request.Path.StartsWithSegments("/bff")
+        && !ctx.Request.Path.StartsWithSegments("/api")
+        && !ctx.Request.Path.StartsWithSegments("/health")
+        && !ctx.Request.Path.StartsWithSegments("/alive"),
+    branch => branch.UseStaticFiles());
+
 app.UseRouting();
 app.UseCors("BffClient");
 app.UseAuthentication();
@@ -36,4 +43,6 @@ app.MapBackchannelLogoutEndpoint();
 app.MapHealthEndpoint();
 
 app.MapReverseProxy();
+app.MapStaticSpaMounts();
+app.MapSpaFallback();
 app.Run();

@@ -124,4 +124,65 @@ public static class Extensions
 
         return app;
     }
+
+    // Path prefixes reserved for the BFF itself (proxied APIs, health checks). A subdirectory
+    // matching one of these must never get a SPA fallback route, since its constrained catch-all
+    // would take precedence over the corresponding YARP/health route and swallow those requests.
+    private static readonly string[] ReservedSpaMountNames = ["bff", "api", "health", "alive"];
+
+    // Auto-discovers additional SPAs mounted under wwwroot: any immediate subdirectory with its
+    // own index.html (e.g. wwwroot/admin/index.html) gets a client-side-routing fallback scoped
+    // to its own path prefix (/admin/**), instead of falling through to the root SPA's shell.
+    // No-op if wwwroot doesn't exist or has no such subdirectories.
+    public static WebApplication MapStaticSpaMounts(this WebApplication app)
+    {
+        if (!Directory.Exists(app.Environment.WebRootPath))
+            return app;
+
+        foreach (var dir in Directory.GetDirectories(app.Environment.WebRootPath))
+        {
+            if (!File.Exists(Path.Combine(dir, "index.html")))
+                continue;
+
+            var name = Path.GetFileName(dir);
+
+            if (ReservedSpaMountNames.Contains(name, StringComparer.OrdinalIgnoreCase))
+                continue;
+
+            app.MapFallbackToFile($"/{name}/{{**slug:nonfile}}", $"{name}/index.html");
+        }
+
+        return app;
+    }
+
+    // Serves the root SPA shell for any unmatched non-file request, except under the reserved
+    // prefixes (BFF endpoints, the reverse proxy, health checks). Those must 404 instead of
+    // falling through to the SPA shell — otherwise an unmatched /bff/** or /api/** request (or
+    // /health, /alive in Production, where MapDefaultEndpoints doesn't map them) would get a 200
+    // with the SPA's index.html instead of a 404 or the intended handler's response.
+    public static WebApplication MapSpaFallback(this WebApplication app, string filePath = "index.html")
+    {
+        app.MapFallback(async context =>
+        {
+            var path = context.Request.Path;
+
+            if (ReservedSpaMountNames.Any(name => path.StartsWithSegments($"/{name}")))
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            var fileInfo = app.Environment.WebRootFileProvider.GetFileInfo(filePath);
+            if (!fileInfo.Exists)
+            {
+                context.Response.StatusCode = StatusCodes.Status404NotFound;
+                return;
+            }
+
+            context.Response.ContentType = "text/html";
+            await context.Response.SendFileAsync(fileInfo);
+        });
+
+        return app;
+    }
 }
