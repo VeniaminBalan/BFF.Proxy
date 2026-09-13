@@ -137,16 +137,22 @@ dev (the SPA and BFF run on different ports).
 ### Optionally serving the SPA from the same origin
 
 `Program.cs` unconditionally wires up `UseStaticFiles()` plus a `MapFallbackToFile("index.html")`
-route for any request that doesn't match `/bff/*`, `/api/**`, or another mapped endpoint. Out of
-the box this only serves the placeholder `wwwroot/index.html` committed in this repo ("Sorry,
-nothing here"), so proxy-only deployments are unaffected.
+route for any request that doesn't match `/bff/*`, `/api/**`, or another mapped endpoint. This
+repo ships no `wwwroot` of its own, so it's a true no-op on the base image: unmatched routes 404
+as normal, and proxy-only deployments are completely unaffected.
+
+`/bff/*`, `/api/**`, and Aspire's `/health`/`/alive` checks are reserved prefixes: static-file
+serving is explicitly excluded from them (`UseWhen` around `UseStaticFiles()` in `Program.cs`), so
+those routes always reach their real handler even if a downstream image's `wwwroot` happens to
+contain a file or folder with a colliding name (e.g. an accidentally-named `wwwroot/api/`).
 
 To co-locate a SPA build with the BFF in one container, build a downstream image
-`FROM ghcr.io/<org>/bff-proxy` that copies the SPA's build output over `./wwwroot` (its
-`index.html` overwrites the placeholder). This gives you a same-origin deployment - one
-container, no extra network hop - while keeping `BFF.Proxy` itself generic. CORS and the CSRF
-`/bff/me` token round-trip (below) remain fully configurable either way, since the same image
-also has to support the SPA being hosted on a different origin entirely.
+`FROM ghcr.io/<org>/bff-proxy` that copies the SPA's build output into `./wwwroot`. Once its
+`index.html` is present, unmatched routes serve that file instead of 404ing - giving you a
+same-origin deployment (one container, no extra network hop) while keeping `BFF.Proxy` itself
+generic. CORS and the CSRF `/bff/me` token round-trip (below) remain fully configurable either
+way, since the same image also has to support the SPA being hosted on a different origin
+entirely.
 
 See [`samples/`](samples) for worked examples of building on top of the base image: embedding a
 pre-built or from-source SPA, running it as a pure proxy with a split-origin SPA, and baking

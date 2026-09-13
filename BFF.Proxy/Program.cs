@@ -19,7 +19,12 @@ if (!app.Environment.IsProduction())
 
 app.MapDefaultEndpoints();
 
-app.UseStaticFiles();
+app.UseWhen(
+    ctx => !ctx.Request.Path.StartsWithSegments("/bff")
+        && !ctx.Request.Path.StartsWithSegments("/api")
+        && !ctx.Request.Path.StartsWithSegments("/health")
+        && !ctx.Request.Path.StartsWithSegments("/alive"),
+    branch => branch.UseStaticFiles());
 
 app.UseRouting();
 app.UseCors("BffClient");

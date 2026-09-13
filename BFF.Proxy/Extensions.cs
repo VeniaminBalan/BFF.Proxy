@@ -140,7 +140,7 @@ public static class Extensions
                 continue;
 
             var name = Path.GetFileName(dir);
-            app.MapFallbackToFile($"/{name}/{{**slug}}", $"{name}/index.html");
+            app.MapFallbackToFile($"/{name}/{{**slug:nonfile}}", $"{name}/index.html");
         }
 
         return app;
