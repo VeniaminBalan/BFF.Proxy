@@ -29,4 +29,4 @@ services:
       Keycloak__resource: ${KEYCLOAK_CLIENT_ID:?set KEYCLOAK_CLIENT_ID in .env}
       Keycloak__credentials__secret: ${KEYCLOAK_CLIENT_SECRET:?set KEYCLOAK_CLIENT_SECRET in .env}
       Cors__AllowedOrigins__0: ${SPA_ORIGIN:-http://localhost:3000}
-      ReverseProxy__Clusters__dotnet-backend-cluster__Destinations__backend1__Address: ${BACKEND_API_URL:?set BACKEND_API_URL in .env}
+      ReverseProxy__BackendAddress: ${BACKEND_API_URL:?set BACKEND_API_URL in .env}
