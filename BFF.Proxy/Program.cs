@@ -19,6 +19,8 @@ if (!app.Environment.IsProduction())
 
 app.MapDefaultEndpoints();
 
+app.UseStaticFiles();
+
 app.UseRouting();
 app.UseCors("BffClient");
 app.UseAuthentication();
@@ -36,4 +38,5 @@ app.MapBackchannelLogoutEndpoint();
 app.MapHealthEndpoint();
 
 app.MapReverseProxy();
+app.MapFallbackToFile("index.html");
 app.Run();
