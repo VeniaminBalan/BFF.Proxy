@@ -12,10 +12,11 @@ ENV ASPNETCORE_ENVIRONMENT=Production
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
-COPY ["BFF.Proxy.csproj", "./"]
-RUN dotnet restore "BFF.Proxy.csproj"
+COPY ["Directory.Packages.props", "./"]
+COPY ["BFF.Proxy/BFF.Proxy.csproj", "BFF.Proxy/"]
+RUN dotnet restore "BFF.Proxy/BFF.Proxy.csproj"
 COPY . .
-WORKDIR "/src/"
+WORKDIR "/src/BFF.Proxy"
 RUN dotnet build "./BFF.Proxy.csproj" -c $BUILD_CONFIGURATION -o /app/build
 
 FROM build AS publish
