@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
+using Yarp.ReverseProxy.Configuration;
 using Yarp.ReverseProxy.Transforms;
 
 namespace Bff.Proxy;
@@ -208,8 +209,39 @@ public static class BffServiceCollectionExtensions
             options.AddPolicy("RequireAuthenticatedUser", policy => policy.RequireAuthenticatedUser());
         });
 
+        // Route shape (path match, cluster, auth policy) is fixed application behavior, not
+        // environment config - only the backend address legitimately varies per environment.
+        // Defining it in code keeps a stray env var / appsettings override from silently
+        // dropping the AuthorizationPolicy or mangling the path match.
+        var backendAddress = builder.Configuration["ReverseProxy:BackendAddress"];
+        if (string.IsNullOrWhiteSpace(backendAddress))
+            throw new InvalidOperationException("ReverseProxy:BackendAddress must be configured.");
+
+        var routes = new[]
+        {
+            new RouteConfig
+            {
+                RouteId = "backend-apis",
+                ClusterId = "dotnet-backend-cluster",
+                AuthorizationPolicy = "RequireAuthenticatedUser",
+                Match = new RouteMatch { Path = "/api/{**catch-all}" }
+            }
+        };
+
+        var clusters = new[]
+        {
+            new ClusterConfig
+            {
+                ClusterId = "dotnet-backend-cluster",
+                Destinations = new Dictionary<string, DestinationConfig>
+                {
+                    ["backend1"] = new DestinationConfig { Address = backendAddress }
+                }
+            }
+        };
+
         builder.Services.AddReverseProxy()
-            .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
+            .LoadFromMemory(routes, clusters)
             .AddTransforms(builderContext =>
             {
                 // Intercept every proxied request and attach the Bearer token from the session

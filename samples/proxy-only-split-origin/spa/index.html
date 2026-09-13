@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Split-origin sample SPA</title>
+</head>
+<body>
+  <h1>Split-origin sample SPA</h1>
+  <p>
+    Served by its own nginx container on <code>http://localhost:3000</code>, calling the BFF on
+    <code>http://localhost:8080</code>. This is the shape <code>BFF_CLIENT_SETUP.md</code>
+    documents: two origins, <code>withCredentials: true</code> on <code>/bff/*</code> calls, and
+    the CSRF token read from the <code>/bff/me</code> response body because
+    <code>document.cookie</code> can't see a cookie set by a different origin.
+  </p>
+</body>
+</html>

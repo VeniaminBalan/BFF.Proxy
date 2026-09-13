@@ -29,7 +29,7 @@ public class ProxiedBackendHealthCheck(IHttpClientFactory httpClientFactory, ICo
 {
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken cancellationToken = default)
     {
-        var address = configuration["ReverseProxy:Clusters:dotnet-backend-cluster:Destinations:backend1:Address"];
+        var address = configuration["ReverseProxy:BackendAddress"];
         if (string.IsNullOrWhiteSpace(address))
         {
             return HealthCheckResult.Unhealthy("Proxied backend address is not configured.");

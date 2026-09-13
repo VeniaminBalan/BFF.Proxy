@@ -1,0 +1,31 @@
+# The published base bff.proxy image (ghcr.io/veniaminbalan/bff.proxy) used purely as an
+# API/BFF gateway - no wwwroot, no downstream
+# Dockerfile at all - while the SPA is a completely separate container/origin. This is the
+# "split" deployment shape: Cors:AllowedOrigins has to name the SPA's origin explicitly, and the
+# CSRF token still has to round-trip through /bff/me (see BFF_CLIENT_SETUP.md) because the SPA
+# can't read the BFF's cookie cross-origin.
+services:
+  bff:
+    image: ghcr.io/veniaminbalan/bff.proxy:v1.0.0
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__Redis: redis:6379,abortConnect=false
+      Keycloak__realm: ${KEYCLOAK_REALM}
+      Keycloak__auth-server-url: ${KEYCLOAK_AUTH_SERVER_URL}
+      Keycloak__resource: ${KEYCLOAK_RESOURCE}
+      Keycloak__credentials__secret: ${KEYCLOAK_CLIENT_SECRET}
+      Cors__AllowedOrigins__0: http://localhost:3000
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7
+
+  spa:
+    image: nginx:alpine
+    ports:
+      - "3000:80"
+    volumes:
+      - ./spa:/usr/share/nginx/html:ro

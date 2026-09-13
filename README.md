@@ -147,7 +147,7 @@ those routes always reach their real handler even if a downstream image's `wwwro
 contain a file or folder with a colliding name (e.g. an accidentally-named `wwwroot/api/`).
 
 To co-locate a SPA build with the BFF in one container, build a downstream image
-`FROM ghcr.io/<org>/bff-proxy` that copies the SPA's build output into `./wwwroot`. Once its
+`FROM ghcr.io/veniaminbalan/bff.proxy:v1.0.0` that copies the SPA's build output into `./wwwroot`. Once its
 `index.html` is present, unmatched routes serve that file instead of 404ing - giving you a
 same-origin deployment (one container, no extra network hop) while keeping `BFF.Proxy` itself
 generic. CORS and the CSRF `/bff/me` token round-trip (below) remain fully configurable either
@@ -238,21 +238,17 @@ Fill in `BFF.Proxy/appsettings.json` (or an environment-specific
     "AllowedOrigins": ["https://<spa-origin>"]
   },
   "ReverseProxy": {
-    "Clusters": {
-      "dotnet-backend-cluster": {
-        "Destinations": {
-          "backend1": { "Address": "http://localhost:6081" }
-        }
-      }
-    }
+    "BackendAddress": "http://localhost:6081"
   }
 }
 ```
 
 All four `Keycloak:*` values are required - `KeycloakOptions` binds them at startup with
 `ValidateOnStart()`, so a missing value fails immediately with a clear error instead of the app
-starting and failing mysteriously on first login attempt. `ReverseProxy:Clusters:*` points at
-whichever resource server the BFF is proxying `/api/**` to.
+starting and failing mysteriously on first login attempt. `ReverseProxy:BackendAddress` points at
+whichever resource server the BFF is proxying `/api/**` to. The route's path match and
+`AuthorizationPolicy` are fixed in code (`BffServiceCollectionExtensions.cs`), not configurable -
+only the destination address is.
 
 ### 4. Run it
 
@@ -289,6 +285,7 @@ docker run --rm -p 8080:8080 \
   -e Keycloak__resource=<your client id> \
   -e Keycloak__credentials__secret=<your client secret> \
   -e Cors__AllowedOrigins__0=http://localhost:3000 \
+  -e ReverseProxy__BackendAddress=http://host.docker.internal:6081 \
   bff-proxy
 ```
 
@@ -304,8 +301,12 @@ pick up `appsettings.Development.json` in addition to environment variable overr
 app isn't running as `Production` it logs a startup warning, since a non-Production configuration
 is not secure and must never be used outside local development.
 
-Pre-built images are published to `ghcr.io` on every push to `main` (see
-`.github/workflows/docker-publish.yml`).
+Pre-built images are published to `ghcr.io` on every `v*.*.*` tag push (see
+`.github/workflows/docker-publish.yml`):
+
+```bash
+docker pull ghcr.io/veniaminbalan/bff.proxy:v1.0.0
+```
 
 ### Docker Compose (dev setup)
 
