@@ -6,7 +6,7 @@ using Bff.Proxy.Endpoints;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
-await builder.AddBffServicesAsync();
+var cacheMode = await builder.AddBffServicesAsync();
 
 var app = builder.Build();
 
@@ -15,6 +15,21 @@ if (!app.Environment.IsProduction())
     app.Logger.LogWarning(
         "Running in {Environment} mode - this configuration is NOT secure and must not be used in production",
         app.Environment.EnvironmentName);
+}
+
+if (cacheMode == SessionCacheMode.InMemory)
+{
+    if (app.Environment.IsDevelopment())
+    {
+        app.Logger.LogInformation(
+            "ConnectionStrings:Redis is not configured - using an in-process in-memory session cache");
+    }
+    else
+    {
+        app.Logger.LogWarning(
+            "ConnectionStrings:Redis is not configured - falling back to an in-process in-memory session cache. " +
+            "This does not share session state across instances and back-channel logout will only affect this instance's sessions");
+    }
 }
 
 app.MapDefaultEndpoints();
