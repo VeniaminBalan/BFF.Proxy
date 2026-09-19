@@ -12,9 +12,15 @@ using Yarp.ReverseProxy.Transforms;
 
 namespace Bff.Proxy;
 
+public enum SessionCacheMode
+{
+    Redis,
+    InMemory
+}
+
 public static class BffServiceCollectionExtensions
 {
-    public static async Task AddBffServicesAsync(this WebApplicationBuilder builder)
+    public static async Task<SessionCacheMode> AddBffServicesAsync(this WebApplicationBuilder builder)
     {
         // Required - binding throws at startup if realm/auth-server-url/resource/credentials.secret
         // are missing from config, instead of silently falling back to a hardcoded realm.
@@ -22,12 +28,10 @@ public static class BffServiceCollectionExtensions
             .Bind(builder.Configuration.GetSection(KeycloakOptions.SectionName))
             .ValidateOnStart();
 
-        var redisConnectionMultiplexer = await ConnectionMultiplexer.ConnectAsync(
-            builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379,abortConnect=false");
-        builder.Services.AddSingleton<IConnectionMultiplexer>(redisConnectionMultiplexer);
-
-        builder.Services.AddOpenTelemetry()
-            .WithTracing(tracing => tracing.AddRedisInstrumentation(redisConnectionMultiplexer));
+        var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
+        var cacheMode = string.IsNullOrWhiteSpace(redisConnectionString)
+            ? SessionCacheMode.InMemory
+            : SessionCacheMode.Redis;
 
         // Register an HttpClient tailored for Phase Two / Keycloak REST calls. BaseAddress is the
         // realm-scoped authority with a trailing slash, so callers can use realm-relative paths
@@ -53,19 +57,33 @@ public static class BffServiceCollectionExtensions
         builder.Services.AddHttpClient("KeycloakHealthClient", client => client.Timeout = TimeSpan.FromSeconds(5));
         builder.Services.AddHttpClient("ProxiedBackendHealthClient", client => client.Timeout = TimeSpan.FromSeconds(5));
 
-        builder.Services.AddHealthChecks()
-            .AddRedis(
-                builder.Configuration.GetConnectionString("Redis") ?? "localhost:6379",
-                name: "redis",
-                tags: ["ready"])
+        var healthChecksBuilder = builder.Services.AddHealthChecks()
             .AddCheck<KeycloakHealthCheck>("keycloak", tags: ["ready"])
             .AddCheck<ProxiedBackendHealthCheck>("proxied-backend", tags: ["ready"]);
 
-        builder.Services.AddStackExchangeRedisCache(options =>
+        if (cacheMode == SessionCacheMode.Redis)
         {
-            options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redisConnectionMultiplexer);
-            options.InstanceName = "BffSessionCache:";
-        });
+            var redisConnectionMultiplexer = await ConnectionMultiplexer.ConnectAsync(redisConnectionString!);
+            builder.Services.AddSingleton<IConnectionMultiplexer>(redisConnectionMultiplexer);
+
+            builder.Services.AddOpenTelemetry()
+                .WithTracing(tracing => tracing.AddRedisInstrumentation(redisConnectionMultiplexer));
+
+            healthChecksBuilder.AddRedis(redisConnectionString!, name: "redis", tags: ["ready"]);
+
+            builder.Services.AddStackExchangeRedisCache(options =>
+            {
+                options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redisConnectionMultiplexer);
+                options.InstanceName = "BffSessionCache:";
+            });
+        }
+        else
+        {
+            // No ConnectionStrings:Redis configured - fall back to an in-process cache.
+            // Suitable for local dev / single-instance use only: session state is not shared
+            // across instances, and back-channel logout only affects the local instance's sessions.
+            builder.Services.AddDistributedMemoryCache();
+        }
 
         builder.Services.AddSingleton<RedisTicketStore>();
         builder.Services.AddSingleton<ITicketStore>(sp => sp.GetRequiredService<RedisTicketStore>());
@@ -255,5 +273,7 @@ public static class BffServiceCollectionExtensions
                     }
                 });
             });
+
+        return cacheMode;
     }
 }

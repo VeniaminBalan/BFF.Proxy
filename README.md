@@ -206,7 +206,7 @@ If the same client is also used by a resource API for its own service-to-service
 (a common shortcut - see "One client, two roles reused deliberately" below), also enable "Service
 accounts roles" on it; the BFF itself doesn't need that setting.
 
-### 2. Redis
+### 2. Redis (optional)
 
 Any reachable Redis instance works - this is where session tickets (tokens + claims) are stored,
 keyed by the session cookie's opaque id. For local development, a throwaway container is enough:
@@ -214,6 +214,13 @@ keyed by the session cookie's opaque id. For local development, a throwaway cont
 ```bash
 docker run --rm -p 6379:6379 redis:7
 ```
+
+Redis is optional: if `ConnectionStrings:Redis` is left unset, the BFF falls back to an
+in-process in-memory cache automatically, so you can run it standalone without Docker. This
+fallback is for local dev / single-instance use only - it does not share session state across
+instances, and back-channel logout only removes the session from the instance that handled the
+logout callback. Anything that needs to run more than one BFF instance, or rely on back-channel
+logout working regardless of which instance a user's session lives on, should configure Redis.
 
 ### 3. Configuration
 
@@ -242,6 +249,9 @@ Fill in `BFF.Proxy/appsettings.json` (or an environment-specific
   }
 }
 ```
+
+`ConnectionStrings:Redis` can be omitted entirely - the BFF then uses the in-memory cache
+fallback described above.
 
 All four `Keycloak:*` values are required - `KeycloakOptions` binds them at startup with
 `ValidateOnStart()`, so a missing value fails immediately with a clear error instead of the app
@@ -330,8 +340,10 @@ The BFF listens on `http://localhost:8080`; Redis is also exposed on `localhost:
   service-account calls into Keycloak's Phase Two API. This trades some separation-of-concerns
   purity for one fewer client to manage; splitting into a dedicated client for the BFF is a
   reasonable follow-up if the two start needing different lifecycles (e.g. secret rotation).
-- **Redis over in-memory session state** - required for horizontal scaling and for back-channel
-  logout to have somewhere durable to look up a session by Keycloak's `sid`.
+- **Redis over in-memory session state by default** - needed for horizontal scaling and for
+  back-channel logout to have somewhere durable to look up a session by Keycloak's `sid`. The
+  in-memory fallback (used automatically when `ConnectionStrings:Redis` is unset) trades that away
+  for zero-dependency local dev / single-instance runs.
 - **YARP over a hand-rolled proxy** - request/response streaming, header handling, and health
   checks come for free; the only custom behavior needed is the one request transform that
   attaches the Bearer token.
