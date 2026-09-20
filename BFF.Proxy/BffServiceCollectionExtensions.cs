@@ -222,6 +222,16 @@ public static class BffServiceCollectionExtensions
                     var isSilentAttempt = context.Properties?.Items.TryGetValue("prompt", out var prompt) == true
                                           && prompt == "none";
 
+                    // Failure.Message carries Keycloak's error / error_description (e.g. interaction_required
+                    // when a required step like the org picker can't run under prompt=none). Log it before
+                    // the silent case swallows it, otherwise there is no trace of why SSO fell back to login.
+                    context.HttpContext.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("Bff.Proxy.OidcRemoteFailure")
+                        .LogWarning(context.Failure,
+                            "OIDC remote failure (silent={Silent}, client={Client}): {Message}",
+                            isSilentAttempt, options.ClientId, context.Failure?.Message);
+
                     if (isSilentAttempt)
                     {
                         context.HandleResponse();
