@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
@@ -27,6 +28,15 @@ public static class BffServiceCollectionExtensions
         builder.Services.AddOptions<KeycloakOptions>()
             .Bind(builder.Configuration.GetSection(KeycloakOptions.SectionName))
             .ValidateOnStart();
+
+        // Several BFF instances (one per SPA) can share a browser host, Redis and a machine's
+        // Data Protection key ring. Scope each instance's session state by its Keycloak client so one
+        // instance never accepts a session (and tokens) issued to another - cookies are not port-scoped,
+        // so on localhost the instances would otherwise read each other's cookie.
+        var instanceId = builder.Configuration[$"{KeycloakOptions.SectionName}:resource"]
+                         ?? throw new InvalidOperationException("Keycloak:resource must be configured.");
+
+        builder.Services.AddDataProtection().SetApplicationName($"Bff.Proxy:{instanceId}");
 
         var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
         var cacheMode = string.IsNullOrWhiteSpace(redisConnectionString)
@@ -74,7 +84,7 @@ public static class BffServiceCollectionExtensions
             builder.Services.AddStackExchangeRedisCache(options =>
             {
                 options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redisConnectionMultiplexer);
-                options.InstanceName = "BffSessionCache:";
+                options.InstanceName = $"BffSessionCache:{instanceId}:";
             });
         }
         else
@@ -170,8 +180,8 @@ public static class BffServiceCollectionExtensions
             .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
             {
                 options.Cookie.Name = builder.Environment.IsDevelopment()
-                    ? "bff-session"
-                    : "__Host-bff-session"; // Secure prefix
+                    ? $"bff-session-{instanceId}"
+                    : "__Host-bff-session"; // Secure prefix; host-scoped, so already unique per instance
                 options.Cookie.HttpOnly = true;             // Prevents XSS access
                 options.Cookie.SameSite = SameSiteMode.Lax; // Adjust to Strict if on identical domain
                 options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
