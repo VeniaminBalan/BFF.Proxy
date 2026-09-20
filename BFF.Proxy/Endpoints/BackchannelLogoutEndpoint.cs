@@ -71,7 +71,7 @@ public static class BackchannelLogoutEndpoint
 
                     // Must contain logout event claim
                     var eventsClaim = principal.FindFirst("events")?.Value;
-                    if (string.IsNullOrEmpty(eventsClaim) || !eventsClaim.Contains("http://schemas.openid.net/event/backchannel-logout"))
+                    if (!HasBackchannelLogoutEvent(eventsClaim))
                     {
                         logger.LogWarning("Backchannel logout rejected: missing backchannel-logout event claim (http://schemas.openid.net/event/backchannel-logout).");
                         return Results.BadRequest("Invalid logout event claim.");
@@ -95,10 +95,26 @@ public static class BackchannelLogoutEndpoint
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Backchannel logout rejected: token validation failed: {Message}", ex.Message);
-                    return Results.BadRequest($"Token validation failed: {ex.Message}");
+                    return Results.BadRequest("Invalid logout token.");
                 }
             })
             .AllowAnonymous()
             .DisableAntiforgery(); // Keycloak sends raw POST without CSRF token
+    }
+
+    // The "events" claim is a JSON object keyed by event URI; check for the key, not a substring.
+    private static bool HasBackchannelLogoutEvent(string? eventsClaim)
+    {
+        if (string.IsNullOrEmpty(eventsClaim)) return false;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(eventsClaim);
+            return doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object
+                   && doc.RootElement.TryGetProperty("http://schemas.openid.net/event/backchannel-logout", out _);
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return false;
+        }
     }
 }

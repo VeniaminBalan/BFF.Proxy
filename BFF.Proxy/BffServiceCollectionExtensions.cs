@@ -180,7 +180,7 @@ public static class BffServiceCollectionExtensions
             .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
             {
                 options.Cookie.Name = builder.Environment.IsDevelopment()
-                    ? $"bff-session-{instanceId}"
+                    ? $"bff-session-{System.Text.RegularExpressions.Regex.Replace(instanceId, "[^A-Za-z0-9_-]", "_")}"
                     : "__Host-bff-session"; // Secure prefix; host-scoped, so already unique per instance
                 options.Cookie.HttpOnly = true;             // Prevents XSS access
                 options.Cookie.SameSite = SameSiteMode.Lax; // Adjust to Strict if on identical domain
@@ -228,12 +228,22 @@ public static class BffServiceCollectionExtensions
                     // Failure.Message carries Keycloak's error / error_description (e.g. interaction_required
                     // when a required step like the org picker can't run under prompt=none). Log it before
                     // the silent case swallows it, otherwise there is no trace of why SSO fell back to login.
-                    context.HttpContext.RequestServices
+                    // login_required on a silent attempt is the normal "no SSO session" outcome, so it is not a warning.
+                    var failureLogger = context.HttpContext.RequestServices
                         .GetRequiredService<ILoggerFactory>()
-                        .CreateLogger("Bff.Proxy.OidcRemoteFailure")
-                        .LogWarning(context.Failure,
-                            "OIDC remote failure (silent={Silent}, client={Client}): {Message}",
-                            isSilentAttempt, options.ClientId, context.Failure?.Message);
+                        .CreateLogger("Bff.Proxy.OidcRemoteFailure");
+                    if (isSilentAttempt)
+                    {
+                        failureLogger.LogInformation(
+                            "Silent OIDC attempt failed (client={Client}): {Message}",
+                            options.ClientId, context.Failure?.Message);
+                    }
+                    else
+                    {
+                        failureLogger.LogWarning(context.Failure,
+                            "OIDC remote failure (client={Client}): {Message}",
+                            options.ClientId, context.Failure?.Message);
+                    }
 
                     if (isSilentAttempt)
                     {

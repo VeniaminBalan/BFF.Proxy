@@ -108,7 +108,11 @@ This matters because cookies are not scoped by port: on `localhost`, `localhost:
 `localhost:6090` share one cookie jar, so two BFFs using the same cookie name, Redis prefix and
 Data Protection keys will accept each other's sessions (wrong client, wrong audience, no `org`
 claim). In production `__Host-` cookies are host-only, so separate hostnames never collide; two BFFs
-on one host under different paths would, because `__Host-` forces `Path=/`.
+on one host under different paths would, because `__Host-` forces `Path=/`. In dev, characters outside
+`[A-Za-z0-9_-]` in the client id are replaced with `_` in the cookie name.
+
+**Upgrading:** the Data Protection application name, Redis prefix and dev cookie name all changed, so
+existing sessions become invalid once (users are logged out and must sign in again).
 
 ### Proactive token refresh
 
