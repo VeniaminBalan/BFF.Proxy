@@ -8,7 +8,14 @@ var builder = WebApplication.CreateBuilder(args);
 builder.AddServiceDefaults();
 var cacheMode = await builder.AddBffServicesAsync();
 
+// Opt-in reverse proxy support (ForwardedHeaders:* config); ignored when the BFF is exposed directly
+builder.Services.AddConfiguredForwardedHeaders(builder.Configuration);
+
 var app = builder.Build();
+
+// Forwarded headers FIRST (only when enabled) so the scheme/host seen behind Traefik are correct
+// (OIDC redirect URIs, secure cookies) and YARP forwards the original X-Forwarded-Proto to the APIs
+app.UseConfiguredForwardedHeaders(app.Configuration);
 
 if (!app.Environment.IsProduction())
 {

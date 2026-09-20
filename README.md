@@ -147,6 +147,51 @@ Only origins listed in `Cors:AllowedOrigins` (the SPA's own origin) are allowed,
 `AllowCredentials()` is required so the session cookie can flow on cross-port requests in local
 dev (the SPA and BFF run on different ports).
 
+### Running behind a reverse proxy (forwarded headers)
+
+When a TLS-terminating proxy (Traefik, nginx, an ingress) sits in front of the BFF, the BFF only
+sees plain HTTP from the proxy. Without help it would build OIDC redirect URIs and `Secure` cookies
+from the wrong scheme/host, and YARP would tell downstream APIs the request was `http` (which makes
+an API that calls `UseHttpsRedirection()` answer 307 - and the proxied browser follows that redirect
+straight to the API, bypassing the BFF and its session).
+
+`X-Forwarded-*` support is therefore **opt-in and off by default**. Trusting these headers from
+arbitrary clients is a vulnerability, and this BFF is also meant to be exposed directly:
+
+- `X-Forwarded-Host` spoofing changes the host the BFF sees, which feeds the OIDC `redirect_uri`
+  and could steer a login flow to an attacker-controlled host.
+- `X-Forwarded-Proto` spoofing makes a plain-HTTP request look secure (cookie flags, redirects).
+- `X-Forwarded-For` spoofing defeats IP-based rate limiting, allowlists and audit logs.
+
+Enable it only when a trusted proxy is in front (`ForwardedHeaders` section, or
+`ForwardedHeaders__*` env vars):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ForwardedHeaders:Enabled` | `false` | Master switch. When `false` the headers are ignored entirely. |
+| `ForwardedHeaders:KnownProxies` | none | Proxy IP addresses whose headers are trusted. |
+| `ForwardedHeaders:KnownNetworks` | none | CIDR ranges to trust, e.g. the Docker network subnet `172.18.0.0/16`. |
+| `ForwardedHeaders:TrustHost` | `false` | Also honour `X-Forwarded-Host`. Only enable if the proxy sets it and you rely on it. |
+
+If `Enabled` is `true` but no proxies or networks are listed, only loopback is trusted, so the
+setting fails safe. Headers from any other address are ignored.
+
+```yaml
+# Behind Traefik on a private Docker network
+environment:
+  ForwardedHeaders__Enabled: "true"
+  ForwardedHeaders__KnownNetworks__0: "172.18.0.0/16"
+```
+
+When enabled, `UseForwardedHeaders()` is the first middleware in the pipeline (see
+`ForwardedHeadersExtensions.cs` and `Program.cs`), so everything after it - authentication, the
+OIDC handler, CSRF, YARP - sees the original scheme and client IP. In a chain such as
+browser -> Traefik -> BFF -> API, the BFF must have this enabled or it will forward
+`X-Forwarded-Proto: http` to the API even though the browser used HTTPS.
+
+Enforce HTTPS at the proxy edge (e.g. a Traefik entrypoint redirect) rather than in the internal
+services. The BFF does not call `UseHttpsRedirection()`.
+
 ### Optionally serving the SPA from the same origin
 
 `Program.cs` unconditionally wires up `UseStaticFiles()` and a custom `MapSpaFallback()` endpoint
@@ -380,6 +425,8 @@ The BFF listens on `http://localhost:8080`; Redis is also exposed on `localhost:
 | A second BFF on the same host shows the user as logged in with the wrong tokens / no `org` claim | Cookie name, Redis prefix or Data Protection keys shared between instances | Fixed by per-client scoping (see Session storage). Clear old `bff-session` cookies once. |
 | Back-channel logout returns 400 | (a) `events` claim checked against the wrong URI; the OIDC event is `http://schemas.openid.net/event/backchannel-logout` (no hyphen in `backchannel`). (b) JWKS fetch throws because `RequireHttps` was derived from the inbound request instead of the authority scheme | Both fixed in `BackchannelLogoutEndpoint.cs`. Check the `Bff.Proxy.BackchannelLogout` log lines. |
 | Back-channel logout is never received | Client has no `Backchannel logout URL`, or Keycloak cannot reach the BFF (`host.docker.internal` in dev) | Set the URL on **every** BFF client, not only the first one. |
+| Behind a reverse proxy, OIDC redirects use `http://` or the wrong host; `Secure` cookies are not set | Forwarded headers not enabled, or the proxy's IP/network is not in `KnownProxies`/`KnownNetworks` (headers from untrusted sources are silently ignored) | Set `ForwardedHeaders:Enabled=true` and list the proxy - see "Running behind a reverse proxy". |
+| Browser request to `/api/...` gets a 307 to the API's own `https://` address, then 401 | The API redirects to HTTPS because the BFF forwarded `X-Forwarded-Proto: http` (or the API has no forwarded-headers support) | Enable forwarded headers on the BFF and the API, or enforce HTTPS at the proxy edge and drop `UseHttpsRedirection()` from the API. |
 | Silent login falls back to the login button | `login_required` = no SSO session (see the first row); the reason is logged as `Bff.Proxy.OidcRemoteFailure` | Read the logged `error`; do not assume the org picker is at fault. |
 
 Note: with .NET 9+ the OIDC handler automatically uses Pushed Authorization Requests when the
