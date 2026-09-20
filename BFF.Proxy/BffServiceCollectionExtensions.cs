@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
@@ -27,6 +28,15 @@ public static class BffServiceCollectionExtensions
         builder.Services.AddOptions<KeycloakOptions>()
             .Bind(builder.Configuration.GetSection(KeycloakOptions.SectionName))
             .ValidateOnStart();
+
+        // Several BFF instances (one per SPA) can share a browser host, Redis and a machine's
+        // Data Protection key ring. Scope each instance's session state by its Keycloak client so one
+        // instance never accepts a session (and tokens) issued to another - cookies are not port-scoped,
+        // so on localhost the instances would otherwise read each other's cookie.
+        var instanceId = builder.Configuration[$"{KeycloakOptions.SectionName}:resource"]
+                         ?? throw new InvalidOperationException("Keycloak:resource must be configured.");
+
+        builder.Services.AddDataProtection().SetApplicationName($"Bff.Proxy:{instanceId}");
 
         var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
         var cacheMode = string.IsNullOrWhiteSpace(redisConnectionString)
@@ -74,7 +84,7 @@ public static class BffServiceCollectionExtensions
             builder.Services.AddStackExchangeRedisCache(options =>
             {
                 options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redisConnectionMultiplexer);
-                options.InstanceName = "BffSessionCache:";
+                options.InstanceName = $"BffSessionCache:{instanceId}:";
             });
         }
         else
@@ -170,8 +180,8 @@ public static class BffServiceCollectionExtensions
             .AddCookie(CookieAuthenticationDefaults.AuthenticationScheme, options =>
             {
                 options.Cookie.Name = builder.Environment.IsDevelopment()
-                    ? "bff-session"
-                    : "__Host-bff-session"; // Secure prefix
+                    ? $"bff-session-{System.Text.RegularExpressions.Regex.Replace(instanceId, "[^A-Za-z0-9_-]", "_")}"
+                    : "__Host-bff-session"; // Secure prefix; host-scoped, so already unique per instance
                 options.Cookie.HttpOnly = true;             // Prevents XSS access
                 options.Cookie.SameSite = SameSiteMode.Lax; // Adjust to Strict if on identical domain
                 options.Cookie.SecurePolicy = builder.Environment.IsDevelopment()
@@ -192,7 +202,10 @@ public static class BffServiceCollectionExtensions
                 // Set to true in production with HTTPS
                 options.Scope.Add("openid");
                 options.Scope.Add("profile");
-                options.Scope.Add("offline_access"); // For refresh tokens
+                // Deliberately NOT requesting offline_access. Since Keycloak 26.1.0 the initial online session is removed
+                // when offline_access is requested as the first interaction, leaving no SSO session (no KEYCLOAK_IDENTITY,
+                // silent login = login_required, no SSO across apps, no backchannel logout). Keycloak issues an online
+                // refresh token without it, which is what OnValidatePrincipal uses. See README "Do not request offline_access".
 
                 options.Events.OnRedirectToIdentityProvider = context =>
                 {
@@ -211,6 +224,26 @@ public static class BffServiceCollectionExtensions
                 {
                     var isSilentAttempt = context.Properties?.Items.TryGetValue("prompt", out var prompt) == true
                                           && prompt == "none";
+
+                    // Failure.Message carries Keycloak's error / error_description (e.g. interaction_required
+                    // when a required step like the org picker can't run under prompt=none). Log it before
+                    // the silent case swallows it, otherwise there is no trace of why SSO fell back to login.
+                    // login_required on a silent attempt is the normal "no SSO session" outcome, so it is not a warning.
+                    var failureLogger = context.HttpContext.RequestServices
+                        .GetRequiredService<ILoggerFactory>()
+                        .CreateLogger("Bff.Proxy.OidcRemoteFailure");
+                    if (isSilentAttempt)
+                    {
+                        failureLogger.LogInformation(
+                            "Silent OIDC attempt failed (client={Client}): {Message}",
+                            options.ClientId, context.Failure?.Message);
+                    }
+                    else
+                    {
+                        failureLogger.LogWarning(context.Failure,
+                            "OIDC remote failure (client={Client}): {Message}",
+                            options.ClientId, context.Failure?.Message);
+                    }
 
                     if (isSilentAttempt)
                     {
