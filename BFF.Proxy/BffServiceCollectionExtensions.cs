@@ -202,7 +202,10 @@ public static class BffServiceCollectionExtensions
                 // Set to true in production with HTTPS
                 options.Scope.Add("openid");
                 options.Scope.Add("profile");
-                options.Scope.Add("offline_access"); // For refresh tokens
+                // Deliberately NOT requesting offline_access. Since Keycloak 26.1.0 the initial online session is removed
+                // when offline_access is requested as the first interaction, leaving no SSO session (no KEYCLOAK_IDENTITY,
+                // silent login = login_required, no SSO across apps, no backchannel logout). Keycloak issues an online
+                // refresh token without it, which is what OnValidatePrincipal uses. See README "Do not request offline_access".
 
                 options.Events.OnRedirectToIdentityProvider = context =>
                 {

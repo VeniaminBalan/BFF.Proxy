@@ -47,8 +47,8 @@ Bearer token attached server-side.
    back to the BFF's OIDC callback with an authorization code. ASP.NET Core's OpenID Connect
    handler exchanges the code for tokens (`SaveTokens = true`) and signs the user into a cookie
    session backed by Redis (`RedisTicketStore`).
-2. **Session cookie only** - From here on, the browser only ever holds the `bff-session` (dev) /
-   `__Host-bff-session` (prod) cookie: `HttpOnly`, `SameSite=Lax`, `Secure` in production. The
+2. **Session cookie only** - From here on, the browser only ever holds the `bff-session-{client}` (dev, e.g.
+   `bff-session-todo-api`) / `__Host-bff-session` (prod) cookie: `HttpOnly`, `SameSite=Lax`, `Secure` in production. The
    actual tokens live server-side in Redis, keyed by the cookie's opaque session id.
 3. **Calling the API** - The SPA calls `/api/**` on the BFF's own origin. YARP proxies the request
    to the resource API, and a request transform pulls the access token out of the current cookie
@@ -100,6 +100,15 @@ The cookie itself only carries an opaque key; the actual `AuthenticationTicket` 
 horizontally scalable (any instance can serve any request) and is also how back-channel logout
 works: Keycloak's `sid` claim is indexed in Redis (`bff-sid:{sid} -> session key`), so a
 server-to-server logout call can find and kill the right session without a browser involved.
+
+**Several BFF instances side by side.** Each instance scopes its session state by its Keycloak client
+(`Keycloak:resource`): the dev cookie is `bff-session-{client}`, the Redis prefix is
+`BffSessionCache:{client}:`, and Data Protection uses `SetApplicationName("Bff.Proxy:{client}")`.
+This matters because cookies are not scoped by port: on `localhost`, `localhost:6080` and
+`localhost:6090` share one cookie jar, so two BFFs using the same cookie name, Redis prefix and
+Data Protection keys will accept each other's sessions (wrong client, wrong audience, no `org`
+claim). In production `__Host-` cookies are host-only, so separate hostnames never collide; two BFFs
+on one host under different paths would, because `__Host-` forces `Path=/`.
 
 ### Proactive token refresh
 
@@ -181,6 +190,32 @@ a missing value fails fast instead of silently falling back to a hardcoded realm
 realm-scoped issuer URL (`Authority`) is computed once (`{auth-server-url}/realms/{realm}`) and
 reused everywhere - the `KeycloakClient` HttpClient, the OIDC handler, token refresh, and the
 Keycloak health check.
+
+#### Do not request `offline_access`
+
+The BFF requests `openid profile` only, on purpose. Since **Keycloak 26.1.0**, Keycloak removes the
+initial online session when `offline_access` is requested as the first interaction for that
+session (upgrade guide, quoted in
+[keycloak#36717](https://github.com/keycloak/keycloak/issues/36717): "Keycloak removes the initial
+online session if the offline_scope is directly requested as the first interaction for the
+session"; see also [#36921](https://github.com/keycloak/keycloak/issues/36921) and
+[#36499](https://github.com/keycloak/keycloak/discussions/36499)). A BFF login with
+`offline_access` therefore ends up with only an *offline* session and no SSO session:
+
+- no lasting `KEYCLOAK_IDENTITY` cookie, so other apps and the account console ask you to log in again;
+- silent login (`prompt=none`) fails with `login_required`;
+- logout shows "Session not active" (the `id_token_hint`'s `sid` no longer exists);
+- back-channel logout never reaches the other clients, because there is no shared user session.
+
+It can look intermittent: if the user already had an online session (e.g. from logging into the
+account console first), the request is not the first interaction and SSO works. A test that only
+starts the login and never redeems the code will not reproduce it.
+
+Keycloak issues an online refresh token without `offline_access`, and that is what the proactive
+refresh uses. The consequence is that BFF sessions end with the SSO session
+(`ssoSessionIdleTimeout` / `ssoSessionMaxLifespan`); raise those in the realm if you need longer
+sessions. If you ever do need offline tokens, establish the online session first and request
+`offline_access` in a separate, second authorization request.
 
 ## Setup
 
@@ -332,6 +367,21 @@ docker compose up --build
 
 The BFF listens on `http://localhost:8080`; Redis is also exposed on `localhost:6379`. See
 `.env.example` for the full list of variables the compose file expects.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Logging in through the BFF does not create `KEYCLOAK_IDENTITY`; SSO to other apps / account console fails; silent login returns `login_required`; "Session not active" on logout | `offline_access` requested on a first login (Keycloak >= 26.1.0) | Do not request it - see "Do not request `offline_access`". |
+| A second BFF on the same host shows the user as logged in with the wrong tokens / no `org` claim | Cookie name, Redis prefix or Data Protection keys shared between instances | Fixed by per-client scoping (see Session storage). Clear old `bff-session` cookies once. |
+| Back-channel logout returns 400 | (a) `events` claim checked against the wrong URI; the OIDC event is `http://schemas.openid.net/event/backchannel-logout` (no hyphen in `backchannel`). (b) JWKS fetch throws because `RequireHttps` was derived from the inbound request instead of the authority scheme | Both fixed in `BackchannelLogoutEndpoint.cs`. Check the `Bff.Proxy.BackchannelLogout` log lines. |
+| Back-channel logout is never received | Client has no `Backchannel logout URL`, or Keycloak cannot reach the BFF (`host.docker.internal` in dev) | Set the URL on **every** BFF client, not only the first one. |
+| Silent login falls back to the login button | `login_required` = no SSO session (see the first row); the reason is logged as `Bff.Proxy.OidcRemoteFailure` | Read the logged `error`; do not assume the org picker is at fault. |
+
+Note: with .NET 9+ the OIDC handler automatically uses Pushed Authorization Requests when the
+provider advertises a PAR endpoint (the auth redirect then carries only `request_uri=`). That is
+expected and was ruled out as the cause of the SSO problem above; it can be turned off with
+`options.PushedAuthorizationBehavior = PushedAuthorizationBehavior.Disable` if a provider needs it.
 
 ## Why this shape (design rationale)
 
