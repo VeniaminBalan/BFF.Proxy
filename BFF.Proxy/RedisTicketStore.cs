@@ -61,12 +61,16 @@ public class RedisTicketStore : ITicketStore
     }
 
     // Helper method to delete session by Keycloak SID during Back-Channel Logout
-    public async Task RemoveBySidAsync(string sid)
+    // Returns whether a session was indexed under this sid (and therefore removed).
+    public async Task<bool> RemoveBySidAsync(string sid)
     {
         var sessionKey = await _cache.GetStringAsync($"{SidPrefix}{sid}");
-        if (!string.IsNullOrEmpty(sessionKey))
+        if (string.IsNullOrEmpty(sessionKey))
         {
-            await RemoveAsync(sessionKey);
+            return false;
         }
+
+        await RemoveAsync(sessionKey);
+        return true;
     }
 }
