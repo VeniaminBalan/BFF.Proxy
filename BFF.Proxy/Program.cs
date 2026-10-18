@@ -2,8 +2,27 @@ using Bff.Proxy;
 using BFF.Proxy;
 using Bff.Proxy.Csrf;
 using Bff.Proxy.Endpoints;
+using Serilog;
+using Serilog.Formatting.Compact;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Human-readable console in Development, single-line JSON elsewhere. writeToProviders keeps the
+// other logging providers alive, notably the OpenTelemetry one (builder.Logging.AddOpenTelemetry)
+// that exports logs over OTLP; without it Serilog replaces them and OTLP log export silently stops.
+// That flag also forwards to the default console provider (duplicate, non-Serilog lines), so drop
+// the defaults first; the OpenTelemetry provider is added afterwards in AddServiceDefaults.
+builder.Logging.ClearProviders();
+builder.Host.UseSerilog((ctx, services, cfg) =>
+{
+    cfg.ReadFrom.Configuration(ctx.Configuration)
+        .Enrich.FromLogContext();
+
+    if (ctx.HostingEnvironment.IsDevelopment())
+        cfg.WriteTo.Console();
+    else
+        cfg.WriteTo.Console(new CompactJsonFormatter());
+}, writeToProviders: true);
 
 builder.AddServiceDefaults();
 var cacheMode = await builder.AddBffServicesAsync();
