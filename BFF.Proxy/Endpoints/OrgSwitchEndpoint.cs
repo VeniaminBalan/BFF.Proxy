@@ -103,7 +103,10 @@ public static class OrgSwitchEndpoint
                         authResult.Properties);
                 }
 
-                return Results.Content(tokenJson, "application/json");
+                // The new tokens now live only in the server-side session. Never hand the Keycloak access/refresh
+                // tokens back to the browser: that is exactly what a BFF exists to prevent. The SPA re-reads the
+                // new `org` claim from /bff/me.
+                return Results.NoContent();
             })
             .RequireAuthorization("RequireAuthenticatedUser");
     }
