@@ -60,6 +60,9 @@ if (cacheMode == SessionCacheMode.InMemory)
 
 app.MapDefaultEndpoints();
 
+// Before static files so the served SPA shell carries the frame-ancestors policy too
+app.UseConfiguredFrameAncestors(app.Configuration);
+
 app.UseWhen(
     ctx => !ctx.Request.Path.StartsWithSegments("/bff")
         && !ctx.Request.Path.StartsWithSegments("/api")

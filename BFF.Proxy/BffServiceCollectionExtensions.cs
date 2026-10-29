@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using OpenTelemetry.Trace;
 using StackExchange.Redis;
 using Yarp.ReverseProxy.Configuration;
@@ -195,6 +196,10 @@ public static class BffServiceCollectionExtensions
                 options.ClientId = keycloakOptions.Resource;
                 options.ClientSecret = keycloakOptions.Credentials.Secret;
                 options.ResponseType = "code";
+                // form_post (default) ends the round-trip on a Keycloak auto-submit HTML page, which the realm's
+                // frame-ancestors 'self' blocks when the SPA runs inside another app's iframe. "query" keeps the
+                // round-trip to plain 302 redirects, so silent SSO (prompt=none) also works when embedded.
+                options.ResponseMode = builder.Configuration["Oidc:ResponseMode"] ?? OpenIdConnectResponseMode.FormPost;
                 options.SaveTokens = true; // Saves access_token and refresh_token into Redis TicketStore
                 options.GetClaimsFromUserInfoEndpoint = true;
                 options.RequireHttpsMetadata = !builder.Environment.IsDevelopment(); // For local dev with HTTP

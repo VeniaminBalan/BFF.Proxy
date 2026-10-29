@@ -147,6 +147,26 @@ Only origins listed in `Cors:AllowedOrigins` (the SPA's own origin) are allowed,
 `AllowCredentials()` is required so the session cookie can flow on cross-port requests in local
 dev (the SPA and BFF run on different ports).
 
+### Framing (clickjacking) and embedding in another app
+
+Every response carries `Content-Security-Policy: frame-ancestors 'self'`, so the served SPA can't be
+framed by other sites. To let another app embed the SPA in an iframe (e.g. the UserPortal showing an
+application inside its shell), list that app's origin, and switch the OIDC response mode to `query`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `Security:FrameAncestors` | none | Extra origins allowed to frame this BFF's responses, besides `'self'`. |
+| `Oidc:ResponseMode` | `form_post` | `query` keeps the login round-trip to plain 302 redirects. With `form_post` it ends on a Keycloak auto-submit page, which the realm's own `frame-ancestors 'self'` blocks inside an iframe. |
+
+```yaml
+environment:
+  Security__FrameAncestors__0: "https://portal.example.com"
+  Oidc__ResponseMode: "query"
+```
+
+Only silent SSO (`prompt=none`) can complete inside a frame. An interactive Keycloak login page
+can't render there, so the embedded SPA should offer to continue in a new tab instead.
+
 ### Running behind a reverse proxy (forwarded headers)
 
 When a TLS-terminating proxy (Traefik, nginx, an ingress) sits in front of the BFF, the BFF only
