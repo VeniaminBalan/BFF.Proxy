@@ -50,3 +50,43 @@ public class ProxiedBackendHealthCheck(IHttpClientFactory httpClientFactory, ICo
         }
     }
 }
+
+
+// /bff/health is anonymous, and every check run makes outbound calls (Keycloak, Redis, the proxied backend).
+// Reusing one report for a few seconds keeps a flood of anonymous probes from turning into a flood of
+// outbound requests; concurrent callers share a single in-flight run.
+public sealed class CachedHealthReport(HealthCheckService healthCheckService)
+{
+    private static readonly TimeSpan Ttl = TimeSpan.FromSeconds(5);
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private HealthReport? _report;
+    private DateTimeOffset _createdAt;
+
+    public async Task<HealthReport> GetAsync(CancellationToken cancellationToken)
+    {
+        if (TryGetFresh(out var report))
+            return report;
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (TryGetFresh(out report))
+                return report;
+
+            report = await healthCheckService.CheckHealthAsync(check => check.Tags.Contains("ready"), cancellationToken);
+            _report = report;
+            _createdAt = DateTimeOffset.UtcNow;
+            return report;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    private bool TryGetFresh(out HealthReport report)
+    {
+        report = _report!;
+        return _report is not null && DateTimeOffset.UtcNow - _createdAt < Ttl;
+    }
+}

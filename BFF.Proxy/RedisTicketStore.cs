@@ -1,16 +1,28 @@
-﻿using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using System.Security.Cryptography;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Caching.Distributed;
 
 namespace Bff.Proxy;
 
+// Tickets hold the user's Keycloak access/refresh/id tokens, so they are encrypted with Data Protection before
+// they reach the cache: a Redis dump, replica or backup alone does not yield usable tokens. (That only holds if
+// the Data Protection keys are not readable alongside them - see "Data Protection keys" in the README.)
 public class RedisTicketStore : ITicketStore
 {
     private readonly IDistributedCache _cache;
+    private readonly IDataProtector _protector;
+    private readonly ILogger<RedisTicketStore> _logger;
     private const string KeyPrefix = "bff-session:";
     private const string SidPrefix = "bff-sid:";
 
-    public RedisTicketStore(IDistributedCache cache) => _cache = cache;
+    public RedisTicketStore(IDistributedCache cache, IDataProtectionProvider dataProtection, ILogger<RedisTicketStore> logger)
+    {
+        _cache = cache;
+        _protector = dataProtection.CreateProtector("Bff.Proxy.RedisTicketStore.v1");
+        _logger = logger;
+    }
 
     public async Task<string> StoreAsync(AuthenticationTicket ticket)
     {
@@ -29,7 +41,7 @@ public class RedisTicketStore : ITicketStore
         else
             options.SetSlidingExpiration(TimeSpan.FromHours(8));
 
-        var val = TicketSerializer.Default.Serialize(ticket);
+        var val = _protector.Protect(TicketSerializer.Default.Serialize(ticket));
         await _cache.SetAsync(key, val, options);
 
         // Index Keycloak Session ID (sid) to this session key
@@ -43,7 +55,20 @@ public class RedisTicketStore : ITicketStore
     public async Task<AuthenticationTicket?> RetrieveAsync(string key)
     {
         var val = await _cache.GetAsync(key);
-        return val == null ? null : TicketSerializer.Default.Deserialize(val);
+        if (val == null)
+            return null;
+
+        try
+        {
+            return TicketSerializer.Default.Deserialize(_protector.Unprotect(val));
+        }
+        catch (CryptographicException ex)
+        {
+            // Written before encryption was added, or with a Data Protection key this instance doesn't have:
+            // treat it as no session (the user signs in again) rather than failing the request.
+            _logger.LogInformation(ex, "Discarding session ticket {Key} that could not be decrypted", key);
+            return null;
+        }
     }
 
     public async Task RemoveAsync(string key)

@@ -1,6 +1,7 @@
 using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using Microsoft.AspNetCore.Authentication.OpenIdConnect;
 using Microsoft.Extensions.Options;
-using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
 
@@ -13,6 +14,7 @@ public static class BackchannelLogoutEndpoint
         app.MapPost("/bff/logout/backchannel", async (
                 HttpContext httpContext,
                 IOptions<KeycloakOptions> keycloakOptions,
+                IOptionsMonitor<OpenIdConnectOptions> oidcOptions,
                 ILoggerFactory loggerFactory) =>
             {
                 var logger = loggerFactory.CreateLogger("Bff.Proxy.BackchannelLogout");
@@ -35,31 +37,24 @@ public static class BackchannelLogoutEndpoint
 
                 try
                 {
-                    // 2. Fetch JWKS keys from Keycloak. RequireHttps must follow the *authority* scheme, not the inbound
-                    // request: Keycloak posts to this endpoint over plain HTTP in dev, and requiring HTTPS for an
-                    // http:// authority makes every metadata fetch throw, so the logout is rejected with a 400.
-                    var metadataAddress = authority.TrimEnd('/') + "/.well-known/openid-configuration";
-                    var configManager = new ConfigurationManager<OpenIdConnectConfiguration>(
-                        metadataAddress,
-                        new OpenIdConnectConfigurationRetriever(),
-                        new HttpDocumentRetriever { RequireHttps = authority.StartsWith("https://", StringComparison.OrdinalIgnoreCase) });
+                    // 2. Validate against Keycloak's signing keys. Reuse the OIDC handler's ConfigurationManager: it is a
+                    // singleton that caches the discovery document and JWKS, so this anonymous endpoint doesn't fetch
+                    // from Keycloak on every POST (which anyone could use to hammer Keycloak through the BFF).
+                    var configManager = oidcOptions.Get(OpenIdConnectDefaults.AuthenticationScheme).ConfigurationManager
+                                        ?? throw new InvalidOperationException("OIDC ConfigurationManager is not configured.");
 
-                    var oidcConfig = await configManager.GetConfigurationAsync(httpContext.RequestAborted);
-
-                    var validationParameters = new TokenValidationParameters
+                    ClaimsPrincipal principal;
+                    try
                     {
-                        ValidateIssuer = true,
-                        ValidIssuer = authority,
-                        ValidateAudience = true,
-                        ValidAudience = clientId,
-                        ValidateIssuerSigningKey = true,
-                        IssuerSigningKeys = oidcConfig.SigningKeys,
-                        ValidateLifetime = true,
-                        ClockSkew = TimeSpan.FromMinutes(2)
-                    };
-
-                    var handler = new JwtSecurityTokenHandler();
-                    var principal = handler.ValidateToken(logoutToken, validationParameters, out var validatedToken);
+                        principal = await ValidateLogoutTokenAsync(configManager, logoutToken, authority, clientId, httpContext.RequestAborted);
+                    }
+                    catch (SecurityTokenSignatureKeyNotFoundException)
+                    {
+                        // Keycloak rotated its keys since the JWKS was cached. RequestRefresh is rate-limited by the
+                        // ConfigurationManager (RefreshInterval), so a flood of bogus tokens can't force refetches.
+                        configManager.RequestRefresh();
+                        principal = await ValidateLogoutTokenAsync(configManager, logoutToken, authority, clientId, httpContext.RequestAborted);
+                    }
 
                     // 3. OIDC Spec Rules Validation
                     // Must NOT contain a nonce
@@ -100,6 +95,30 @@ public static class BackchannelLogoutEndpoint
             })
             .AllowAnonymous()
             .DisableAntiforgery(); // Keycloak sends raw POST without CSRF token
+    }
+
+    private static async Task<ClaimsPrincipal> ValidateLogoutTokenAsync(
+        Microsoft.IdentityModel.Protocols.IConfigurationManager<OpenIdConnectConfiguration> configManager,
+        string logoutToken,
+        string authority,
+        string clientId,
+        CancellationToken cancellationToken)
+    {
+        var oidcConfig = await configManager.GetConfigurationAsync(cancellationToken);
+
+        var validationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = authority,
+            ValidateAudience = true,
+            ValidAudience = clientId,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKeys = oidcConfig.SigningKeys,
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(2)
+        };
+
+        return new JwtSecurityTokenHandler().ValidateToken(logoutToken, validationParameters, out _);
     }
 
     // The "events" claim is a JSON object keyed by event URI; check for the key, not a substring.

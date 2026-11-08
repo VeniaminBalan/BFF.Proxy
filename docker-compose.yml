@@ -2,8 +2,9 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
-    ports:
-      - "6379:6379"
+    # No published port: the BFF reaches Redis over the compose network (redis:6379). Redis holds every
+    # session ticket and has no password here, so it must not listen on the host's interfaces. For local
+    # debugging with redis-cli use `docker compose exec redis redis-cli`.
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s

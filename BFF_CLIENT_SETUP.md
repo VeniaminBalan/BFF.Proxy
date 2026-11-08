@@ -169,7 +169,31 @@ Key pieces:
   };
   ```
 
-- **`logout()`** is the same pattern, hitting `/bff/logout`.
+- **`logout()`** is also a full-page navigation, but a `POST` carrying the CSRF token: the BFF
+  rejects `GET /bff/logout` (so another site can't log the user out with a plain link). An HTML
+  form can't send the `X-CSRF-Token` header, so the token goes in the `csrfToken` form field:
+
+  ```ts
+  const logout = () => {
+    const form = document.createElement('form');
+    form.method = 'POST';
+    form.action = `${BFF_URL}/bff/logout`;
+    const fields = { csrfToken: getCsrfToken() ?? '', redirectUri: window.location.origin };
+    for (const [name, value] of Object.entries(fields)) {
+      const input = document.createElement('input');
+      input.type = 'hidden';
+      input.name = name;
+      input.value = value;
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.submit();
+  };
+  ```
+
+- **`redirectUri`** (login and logout) must be a local path (`/orders`) or an absolute URL on an
+  origin listed in the BFF's `Cors:AllowedOrigins` (or the BFF's own origin). Anything else is
+  replaced with `/`, so a misconfigured origin shows up as "lands on `/` after login".
 
 - **`switchOrganization(organizationId)`** calls `PUT /bff/orgs/switch` then invalidates the
   `['auth', 'me']` query, since the BFF re-issues the session cookie with a new `org` claim and
@@ -231,7 +255,9 @@ manual state sync needed beyond the dropdown's own selection state.
 - [ ] Both axios instances have `withCredentials: true`.
 - [ ] `attachCsrfHeader` is registered as a request interceptor on both axios instances.
 - [ ] `bffApi`'s response interceptor captures `csrfToken` from `/bff/me`.
-- [ ] `login()`/`logout()` are `window.location` redirects, never `fetch`/`axios` calls.
+- [ ] `login()` is a `window.location` redirect and `logout()` a form `POST` with `csrfToken`,
+      never `fetch`/`axios` calls.
+- [ ] The SPA's origin is in the BFF's `Cors:AllowedOrigins`, so `redirectUri` back to it is accepted.
 - [ ] `/bff/me` calls use `validateStatus` to treat `401` as a normal "not logged in" response.
 - [ ] The proxied API client (`axios.ts`) redirects to `/bff/login` on a `401`, so an expired
       session recovers instead of silently failing every request.

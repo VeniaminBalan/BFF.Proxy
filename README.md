@@ -63,8 +63,8 @@ Bearer token attached server-side.
    with a different `org` claim. `/bff/orgs/switch` calls Keycloak's Phase Two API to switch the
    active organization, refreshes the token to get the updated claim, and patches the cached
    session's claims in place so `/bff/me` reflects the new organization immediately.
-6. **Logout** - `/bff/logout` clears both the cookie and the OIDC session and redirects through
-   Keycloak's end-session endpoint. Keycloak also calls `/bff/logout/backchannel` directly
+6. **Logout** - `POST /bff/logout` (with the CSRF token) clears both the cookie and the OIDC session
+   and redirects through Keycloak's end-session endpoint. Keycloak also calls `/bff/logout/backchannel` directly
    (OIDC back-channel logout) when a session ends anywhere - e.g. the user logs out from a
    different app in the same realm - so the BFF can kill the matching Redis session even without
    browser involvement.
@@ -73,13 +73,13 @@ Bearer token attached server-side.
 
 | Endpoint | Method | Auth | Purpose |
 |---|---|---|---|
-| `/bff/login` | GET | anonymous | Starts (or silently reuses) the login flow. `?prompt=none` supports silent SSO checks; `?prompt=select_account` forces Keycloak's account chooser. `?redirectUri=` controls where the browser lands afterward. |
+| `/bff/login` | GET | anonymous | Starts (or silently reuses) the login flow. `?prompt=none` supports silent SSO checks; `?prompt=select_account` forces Keycloak's account chooser. `?redirectUri=` controls where the browser lands afterward: a local path, or an absolute URL on an origin in `Cors:AllowedOrigins` (anything else becomes `/`). |
 | `/bff/me` | GET | anonymous* | "Am I logged in?" probe. Returns `401` if not authenticated (deliberately `AllowAnonymous` + a manual check - see below), otherwise the user's claims and the current CSRF token. |
-| `/bff/logout` | GET | anonymous | Clears the local cookie session and redirects through Keycloak's end-session endpoint. |
+| `/bff/logout` | POST | CSRF token | Clears the local cookie session and redirects through Keycloak's end-session endpoint. Send the token as the `csrfToken` form field (a top-level form submit, see [BFF_CLIENT_SETUP.md](BFF_CLIENT_SETUP.md)) or the `X-CSRF-Token` header; optional `redirectUri` field, same rules as login. `GET` returns `405`. |
 | `/bff/logout/backchannel` | POST | anonymous (Keycloak-only) | OIDC back-channel logout callback. Validates the `logout_token` JWT (issuer, audience, signature, no `nonce`, has a logout event) and removes the matching session from Redis by Keycloak's session id (`sid`). |
 | `/bff/orgs` | GET | required | Lists the organizations the current user belongs to (proxies to Keycloak Phase Two). |
 | `/bff/orgs/switch` | PUT | required | Switches the user's active organization, refreshes the token to pick up the new `org` claim, and re-signs the cookie session. |
-| `/bff/health` | GET | anonymous | Aggregated readiness check (Redis, Keycloak reachability, proxied backend reachability). |
+| `/bff/health` | GET | anonymous | Aggregated readiness check (Redis, Keycloak reachability, proxied backend reachability). Returns only check names and statuses (details are logged), and reuses one result for 5 seconds. |
 | `/api/**` | any | required (per route policy) | Reverse-proxied to the resource API via YARP, with the access token attached server-side. |
 
 \* `/bff/me` and `/bff/login` are `AllowAnonymous` on purpose: if they required authorization,
@@ -114,6 +114,23 @@ on one host under different paths would, because `__Host-` forces `Path=/`. In d
 **Upgrading:** the Data Protection application name, Redis prefix and dev cookie name all changed, so
 existing sessions become invalid once (users are logged out and must sign in again).
 
+**Tickets are encrypted.** `RedisTicketStore` encrypts each ticket with Data Protection before writing
+it, so a Redis dump or backup alone does not expose users' Keycloak tokens. Tickets written by older
+versions can't be decrypted and are treated as "no session" - upgrading logs everyone out once.
+
+### Data Protection keys
+
+The Data Protection key ring decrypts the session cookie, the OIDC state and the encrypted tickets.
+
+| Setting | Effect |
+|---|---|
+| *(Redis configured, nothing else)* | Keys are stored in Redis under `BffDataProtection-Keys:{client}`, shared by all instances and kept across restarts. They are **not** encrypted, so whoever can read Redis can still decrypt the tickets; the BFF logs a warning about this in Production. |
+| `DataProtection:KeysPath` | Keys are stored in this directory instead (mount a shared volume when running several instances). Keeps them out of Redis. |
+| `DataProtection:CertificatePath` (+ `DataProtection:CertificatePassword`) | A PFX used to encrypt the keys at rest, wherever they are stored. Recommended for production. |
+
+Without Redis and without `KeysPath`, keys use the ASP.NET Core default location, which in a
+container is lost on restart (every user is logged out).
+
 ### Proactive token refresh
 
 Configured on the cookie handler's `OnValidatePrincipal` event
@@ -140,6 +157,15 @@ complete defense on its own, so the BFF layers a double-submit CSRF token on top
 
 An attacker's page can force the cookie to be sent automatically, but can't read the `/bff/me`
 JSON response cross-origin (CORS blocks that) and so can't produce a matching header value.
+
+`POST /bff/logout` is the one endpoint the SPA reaches with a top-level form submit (it has to be a
+navigation to follow Keycloak's end-session redirects), so it also accepts the token as the
+`csrfToken` form field, and checks it even when no session cookie arrives. Logout deletes the
+`bff-csrf` cookie, so the next session gets a new token.
+
+Cookies are never forwarded to the proxied API: YARP strips the `Cookie` header (the session cookie
+is a BFF credential, not an API one) and replaces any client-sent `Authorization` header with the
+session's access token.
 
 ### CORS
 
@@ -190,7 +216,23 @@ browser -> Traefik -> BFF -> API, the BFF must have this enabled or it will forw
 `X-Forwarded-Proto: http` to the API even though the browser used HTTPS.
 
 Enforce HTTPS at the proxy edge (e.g. a Traefik entrypoint redirect) rather than in the internal
-services. The BFF does not call `UseHttpsRedirection()`.
+services. The BFF does not call `UseHttpsRedirection()`. Outside Development it does send
+`Strict-Transport-Security` (`UseHsts()`, 30 days) on responses to HTTPS requests - behind a
+TLS-terminating proxy that needs `ForwardedHeaders:Enabled`, or the proxy can add the header itself.
+
+### Host filtering (`AllowedHosts`)
+
+The OIDC `redirect_uri` is built from the request's `Host` header (or `X-Forwarded-Host` with
+`TrustHost`). The default `AllowedHosts=*` accepts any host, leaving Keycloak's redirect URI check as
+the only guard. In production set it to the BFF's public host name(s), `;`-separated:
+
+```yaml
+environment:
+  AllowedHosts: "app.example.com"
+```
+
+Requests with any other `Host` get a `400`. The BFF logs a startup warning in Production while
+`AllowedHosts` is still `*`.
 
 ### Optionally serving the SPA from the same origin
 
@@ -414,7 +456,8 @@ cp .env.example .env   # fill in your Keycloak realm/client and backend API URL
 docker compose up --build
 ```
 
-The BFF listens on `http://localhost:8080`; Redis is also exposed on `localhost:6379`. See
+The BFF listens on `http://localhost:8080`. Redis is deliberately not published on the host (it holds
+every session ticket and has no password); use `docker compose exec redis redis-cli` to inspect it. See
 `.env.example` for the full list of variables the compose file expects.
 
 ## Troubleshooting
@@ -423,7 +466,7 @@ The BFF listens on `http://localhost:8080`; Redis is also exposed on `localhost:
 |---|---|---|
 | Logging in through the BFF does not create `KEYCLOAK_IDENTITY`; SSO to other apps / account console fails; silent login returns `login_required`; "Session not active" on logout | `offline_access` requested on a first login (Keycloak >= 26.1.0) | Do not request it - see "Do not request `offline_access`". |
 | A second BFF on the same host shows the user as logged in with the wrong tokens / no `org` claim | Cookie name, Redis prefix or Data Protection keys shared between instances | Fixed by per-client scoping (see Session storage). Clear old `bff-session` cookies once. |
-| Back-channel logout returns 400 | (a) `events` claim checked against the wrong URI; the OIDC event is `http://schemas.openid.net/event/backchannel-logout` (no hyphen in `backchannel`). (b) JWKS fetch throws because `RequireHttps` was derived from the inbound request instead of the authority scheme | Both fixed in `BackchannelLogoutEndpoint.cs`. Check the `Bff.Proxy.BackchannelLogout` log lines. |
+| Back-channel logout returns 400 | (a) `events` claim checked against the wrong URI; the OIDC event is `http://schemas.openid.net/event/backchannel-logout` (no hyphen in `backchannel`). (b) JWKS fetch throws because `RequireHttps` was derived from the inbound request instead of the authority scheme | Both fixed in `BackchannelLogoutEndpoint.cs`, which now validates against the OIDC handler's cached Keycloak metadata (`RequireHttpsMetadata`: off only in Development). Check the `Bff.Proxy.BackchannelLogout` log lines. |
 | Back-channel logout is never received | Client has no `Backchannel logout URL`, or Keycloak cannot reach the BFF (`host.docker.internal` in dev) | Set the URL on **every** BFF client, not only the first one. |
 | Behind a reverse proxy, OIDC redirects use `http://` or the wrong host; `Secure` cookies are not set | Forwarded headers not enabled, or the proxy's IP/network is not in `KnownProxies`/`KnownNetworks` (headers from untrusted sources are silently ignored) | Set `ForwardedHeaders:Enabled=true` and list the proxy - see "Running behind a reverse proxy". |
 | Browser request to `/api/...` gets a 307 to the API's own `https://` address, then 401 | The API redirects to HTTPS because the BFF forwarded `X-Forwarded-Proto: http` (or the API has no forwarded-headers support) | Enable forwarded headers on the BFF and the API, or enforce HTTPS at the proxy edge and drop `UseHttpsRedirection()` from the API. |
