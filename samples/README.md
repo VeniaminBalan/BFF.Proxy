@@ -19,7 +19,7 @@ source or pulled from GHCR and re-tagged:
 
 ```bash
 # Option A: build from source
-docker build -t bff-proxy:local -f ../BFF.Proxy/Dockerfile ../BFF.Proxy
+docker build -t bff-proxy:local -f ../BFF.Proxy/Dockerfile ..
 
 # Option B: pull the published image
 docker pull ghcr.io/veniaminbalan/bff.proxy:v1.0.0

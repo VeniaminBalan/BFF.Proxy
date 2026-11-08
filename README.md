@@ -407,7 +407,7 @@ instead of editing `appsettings.json`.
 ### Build the image
 
 ```bash
-docker build -t bff-proxy -f BFF.Proxy/Dockerfile BFF.Proxy
+docker build -t bff-proxy -f BFF.Proxy/Dockerfile .
 ```
 
 ### Run it
