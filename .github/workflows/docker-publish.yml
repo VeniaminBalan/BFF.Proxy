@@ -9,7 +9,14 @@ env:
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
+  # Build + all tests (unit, in-process, real Keycloak) from build.yml.
+  test:
+    uses: ./.github/workflows/build.yml
+    permissions:
+      contents: read
+
   build-and-push:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

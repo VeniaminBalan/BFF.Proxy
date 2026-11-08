@@ -5,6 +5,8 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Reused by docker-publish.yml, so no image is published unless the tests pass.
+  workflow_call:
 
 # Read-only token: this workflow only checks out and builds.
 permissions:
