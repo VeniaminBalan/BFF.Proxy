@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Net.Http.Headers;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Bff.Proxy.Endpoints;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -24,18 +25,26 @@ public static class BffServiceCollectionExtensions
 {
     public static async Task<SessionCacheMode> AddBffServicesAsync(this WebApplicationBuilder builder)
     {
-        // Required - binding throws at startup if realm/auth-server-url/resource/credentials.secret
-        // are missing from config, instead of silently falling back to a hardcoded realm.
+        // Required - startup fails if realm/auth-server-url/resource/credentials.secret are missing from config,
+        // instead of silently falling back to a hardcoded realm. appsettings.json ships them as empty strings,
+        // which binding accepts, so empty counts as missing.
         builder.Services.AddOptions<KeycloakOptions>()
             .Bind(builder.Configuration.GetSection(KeycloakOptions.SectionName))
+            .Validate(
+                o => !string.IsNullOrWhiteSpace(o.Realm)
+                     && !string.IsNullOrWhiteSpace(o.AuthServerUrl)
+                     && !string.IsNullOrWhiteSpace(o.Resource)
+                     && !string.IsNullOrWhiteSpace(o.Credentials?.Secret),
+                "Keycloak:realm, Keycloak:auth-server-url, Keycloak:resource and Keycloak:credentials:secret must be configured.")
             .ValidateOnStart();
 
         // Several BFF instances (one per SPA) can share a browser host, Redis and a machine's
         // Data Protection key ring. Scope each instance's session state by its Keycloak client so one
         // instance never accepts a session (and tokens) issued to another - cookies are not port-scoped,
         // so on localhost the instances would otherwise read each other's cookie.
-        var instanceId = builder.Configuration[$"{KeycloakOptions.SectionName}:resource"]
-                         ?? throw new InvalidOperationException("Keycloak:resource must be configured.");
+        var instanceId = builder.Configuration[$"{KeycloakOptions.SectionName}:resource"];
+        if (string.IsNullOrWhiteSpace(instanceId))
+            throw new InvalidOperationException("Keycloak:resource must be configured.");
 
         var dataProtection = builder.Services.AddDataProtection().SetApplicationName($"Bff.Proxy:{instanceId}");
 
@@ -106,6 +115,7 @@ public static class BffServiceCollectionExtensions
         ConfigureDataProtectionKeys(builder, dataProtection);
 
         builder.Services.AddSingleton<RedirectUriValidator>();
+        builder.Services.AddSingleton<SigningKeyRefresher>();
         builder.Services.AddSingleton<CachedHealthReport>();
 
         builder.Services.AddSingleton<RedisTicketStore>();

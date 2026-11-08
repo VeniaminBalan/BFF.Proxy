@@ -15,6 +15,7 @@ public static class BackchannelLogoutEndpoint
                 HttpContext httpContext,
                 IOptions<KeycloakOptions> keycloakOptions,
                 IOptionsMonitor<OpenIdConnectOptions> oidcOptions,
+                SigningKeyRefresher signingKeyRefresher,
                 ILoggerFactory loggerFactory) =>
             {
                 var logger = loggerFactory.CreateLogger("Bff.Proxy.BackchannelLogout");
@@ -40,20 +41,24 @@ public static class BackchannelLogoutEndpoint
                     // 2. Validate against Keycloak's signing keys. Reuse the OIDC handler's ConfigurationManager: it is a
                     // singleton that caches the discovery document and JWKS, so this anonymous endpoint doesn't fetch
                     // from Keycloak on every POST (which anyone could use to hammer Keycloak through the BFF).
-                    var configManager = oidcOptions.Get(OpenIdConnectDefaults.AuthenticationScheme).ConfigurationManager
+                    var openIdConnectOptions = oidcOptions.Get(OpenIdConnectDefaults.AuthenticationScheme);
+                    var configManager = openIdConnectOptions.ConfigurationManager
                                         ?? throw new InvalidOperationException("OIDC ConfigurationManager is not configured.");
 
                     ClaimsPrincipal principal;
                     try
                     {
-                        principal = await ValidateLogoutTokenAsync(configManager, logoutToken, authority, clientId, httpContext.RequestAborted);
+                        var cachedConfig = await configManager.GetConfigurationAsync(httpContext.RequestAborted);
+                        principal = ValidateLogoutToken(cachedConfig, logoutToken, authority, clientId);
                     }
                     catch (SecurityTokenSignatureKeyNotFoundException)
                     {
-                        // Keycloak rotated its keys since the JWKS was cached. RequestRefresh is rate-limited by the
-                        // ConfigurationManager (RefreshInterval), so a flood of bogus tokens can't force refetches.
-                        configManager.RequestRefresh();
-                        principal = await ValidateLogoutTokenAsync(configManager, logoutToken, authority, clientId, httpContext.RequestAborted);
+                        // Keycloak rotated its keys since the JWKS was cached. ConfigurationManager.RequestRefresh only
+                        // refreshes in the background, so retrying against it would still see the old keys and this
+                        // logout (which Keycloak does not resend) would be lost. Fetch the keys now instead - at most
+                        // once per SigningKeyRefresher interval, so a flood of bogus tokens can't hammer Keycloak.
+                        var freshConfig = await signingKeyRefresher.GetFreshConfigurationAsync(openIdConnectOptions, httpContext.RequestAborted);
+                        principal = ValidateLogoutToken(freshConfig, logoutToken, authority, clientId);
                     }
 
                     // 3. OIDC Spec Rules Validation
@@ -97,15 +102,12 @@ public static class BackchannelLogoutEndpoint
             .DisableAntiforgery(); // Keycloak sends raw POST without CSRF token
     }
 
-    private static async Task<ClaimsPrincipal> ValidateLogoutTokenAsync(
-        Microsoft.IdentityModel.Protocols.IConfigurationManager<OpenIdConnectConfiguration> configManager,
+    private static ClaimsPrincipal ValidateLogoutToken(
+        OpenIdConnectConfiguration oidcConfig,
         string logoutToken,
         string authority,
-        string clientId,
-        CancellationToken cancellationToken)
+        string clientId)
     {
-        var oidcConfig = await configManager.GetConfigurationAsync(cancellationToken);
-
         var validationParameters = new TokenValidationParameters
         {
             ValidateIssuer = true,
@@ -134,6 +136,41 @@ public static class BackchannelLogoutEndpoint
         catch (System.Text.Json.JsonException)
         {
             return false;
+        }
+    }
+}
+
+// Fetches Keycloak's current signing keys on demand (after a key rotation), rate-limited per BFF instance.
+// Within the interval it hands back the OIDC handler's cached configuration, which the RequestRefresh below
+// has meanwhile updated in the background.
+public sealed class SigningKeyRefresher
+{
+    private static readonly TimeSpan MinInterval = TimeSpan.FromSeconds(30);
+    private readonly SemaphoreSlim _gate = new(1, 1);
+    private DateTimeOffset _lastFetch = DateTimeOffset.MinValue;
+
+    public async Task<OpenIdConnectConfiguration> GetFreshConfigurationAsync(OpenIdConnectOptions options, CancellationToken cancellationToken)
+    {
+        var configManager = options.ConfigurationManager
+                            ?? throw new InvalidOperationException("OIDC ConfigurationManager is not configured.");
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            if (DateTimeOffset.UtcNow - _lastFetch < MinInterval)
+                return await configManager.GetConfigurationAsync(cancellationToken);
+
+            _lastFetch = DateTimeOffset.UtcNow;
+            configManager.RequestRefresh(); // also update the cache the OIDC handler uses
+            var retriever = new Microsoft.IdentityModel.Protocols.HttpDocumentRetriever(options.Backchannel)
+            {
+                RequireHttps = options.RequireHttpsMetadata
+            };
+            return await OpenIdConnectConfigurationRetriever.GetAsync(options.MetadataAddress, retriever, cancellationToken);
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 }

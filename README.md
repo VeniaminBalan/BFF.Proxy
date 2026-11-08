@@ -460,6 +460,31 @@ The BFF listens on `http://localhost:8080`. Redis is deliberately not published 
 every session ticket and has no password); use `docker compose exec redis redis-cli` to inspect it. See
 `.env.example` for the full list of variables the compose file expects.
 
+## Tests
+
+`BFF.Proxy.Tests` (NUnit) has three layers, selectable by category:
+
+| Category | What it runs | Needs |
+|---|---|---|
+| `Unit` | Redirect validation, CSRF comparison, `RedisTicketStore` encryption and sid index | nothing |
+| `Integration` | The real app in-process (`WebApplicationFactory`) against a fake Keycloak and backend (WireMock): login/logout, CSRF, proxy transforms, token refresh, back-channel logout with forged tokens, org switching, Production cookie/HSTS/host rules | nothing |
+| `Keycloak` | End to end against a real Phase Two Keycloak (Testcontainers, realm from `BFF.Proxy.Tests/Keycloak/bff-test-realm.json`): browserless login, refresh, silent SSO, RP and back-channel logout, organizations | Docker |
+
+```bash
+dotnet test BFF.Proxy.slnx                                   # everything (CI does this)
+dotnet test BFF.Proxy.slnx --filter "TestCategory!=Keycloak" # no Docker
+```
+
+No HTTPS is involved: the BFF runs in `Development` (HTTP metadata allowed) and the test realm has
+`sslRequired: none`. The BFF listens on a real port and Testcontainers exposes it to Keycloak as
+`host.testcontainers.internal`, so back-channel logout is tested for real.
+
+To run the `Keycloak` tests against an existing realm instead of a container, set
+`BFF_TEST_KEYCLOAK_URL`, `BFF_TEST_KEYCLOAK_REALM`, `BFF_TEST_KEYCLOAK_CLIENT_ID`,
+`BFF_TEST_KEYCLOAK_CLIENT_SECRET`, `BFF_TEST_KEYCLOAK_USERNAME` and `BFF_TEST_KEYCLOAK_PASSWORD`. The
+client must allow `http://localhost:5199/*` as redirect URI (port via `BFF_TEST_BFF_PORT`). Use a dedicated
+test realm and user. Tests that need the admin API or the container's known orgs are skipped.
+
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |

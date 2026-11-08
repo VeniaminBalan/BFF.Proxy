@@ -113,3 +113,6 @@ app.MapReverseProxy();
 app.MapStaticSpaMounts();
 app.MapSpaFallback();
 app.Run();
+
+// Lets BFF.Proxy.Tests host the app in-process with WebApplicationFactory<Program>.
+public partial class Program;
