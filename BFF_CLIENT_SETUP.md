@@ -193,7 +193,8 @@ Key pieces:
 
 - **`redirectUri`** (login and logout) must be a local path (`/orders`) or an absolute URL on an
   origin listed in the BFF's `Cors:AllowedOrigins` (or the BFF's own origin). Anything else is
-  replaced with `/`, so a misconfigured origin shows up as "lands on `/` after login".
+  rejected with a `400` ("Invalid redirectUri") before the Keycloak round trip, and the BFF logs the
+  rejected value - so a misconfigured origin fails loudly instead of silently landing elsewhere.
 
 - **`switchOrganization(organizationId)`** calls `PUT /bff/orgs/switch` then invalidates the
   `['auth', 'me']` query, since the BFF re-issues the session cookie with a new `org` claim and

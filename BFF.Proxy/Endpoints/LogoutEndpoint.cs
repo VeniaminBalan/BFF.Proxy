@@ -23,11 +23,16 @@ public static class LogoutEndpoint
                         redirectUri = formRedirectUri;
                 }
 
+                // Rejected before signing out, so the user sees the error and is still logged in, rather than being
+                // logged out and then stranded. Only a misconfiguration (or a forged link) gets here.
+                if (!redirectValidator.TryGetSafeRedirect(context, redirectUri, out var safeRedirectUri))
+                    return RedirectUriValidator.RejectedRedirect();
+
                 // The next session gets a fresh CSRF token instead of reusing this one.
                 context.Response.Cookies.Delete(CsrfConstants.CookieName, new CookieOptions { Path = "/" });
 
                 return Results.SignOut(
-                    new AuthenticationProperties { RedirectUri = redirectValidator.Sanitize(context, redirectUri) },
+                    new AuthenticationProperties { RedirectUri = safeRedirectUri },
                     [CookieAuthenticationDefaults.AuthenticationScheme, OpenIdConnectDefaults.AuthenticationScheme]);
             })
             .AllowAnonymous()

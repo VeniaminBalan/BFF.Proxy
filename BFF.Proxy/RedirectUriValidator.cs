@@ -5,14 +5,23 @@ namespace Bff.Proxy;
 // browser off this (trusted) host to any site, before or after a real Keycloak login.
 //
 // Allowed: a local path ("/", "/orders?x=1"), or an absolute http(s) URL whose origin is this BFF's own origin
-// or one of Cors:AllowedOrigins (the split-origin SPA passes its own window.location.href). Anything else
-// falls back to "/".
+// or one of Cors:AllowedOrigins (the split-origin SPA passes its own window.location.href).
+//
+// Where a caller supplies the value (/bff/login, /bff/logout) a disallowed one is rejected with a 400 before any
+// Keycloak round trip (RejectedRedirect), as OAuth does for an invalid redirect_uri: a silent fallback would hide
+// a misconfigured Cors:AllowedOrigins and, in a split-origin deployment, strand the user on the BFF's own "/".
+// Values read back from the data-protected OIDC state were already checked on the way in; Sanitize() re-checks
+// them as a backstop and falls back to "/".
 public sealed class RedirectUriValidator
 {
-    private readonly HashSet<string> _allowedOrigins;
+    private const int MaxLoggedLength = 200;
 
-    public RedirectUriValidator(IConfiguration configuration)
+    private readonly HashSet<string> _allowedOrigins;
+    private readonly ILogger<RedirectUriValidator> _logger;
+
+    public RedirectUriValidator(IConfiguration configuration, ILogger<RedirectUriValidator> logger)
     {
+        _logger = logger;
         _allowedOrigins = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var origin in configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [])
         {
@@ -21,8 +30,42 @@ public sealed class RedirectUriValidator
         }
     }
 
-    public string Sanitize(HttpContext context, string? redirectUri) =>
-        IsAllowed(context, redirectUri) ? redirectUri! : "/";
+    // A missing/empty redirectUri means "/". Returns false (and logs) for a disallowed one; safeRedirectUri is then "/".
+    public bool TryGetSafeRedirect(HttpContext context, string? redirectUri, out string safeRedirectUri)
+    {
+        if (string.IsNullOrEmpty(redirectUri))
+        {
+            safeRedirectUri = "/";
+            return true;
+        }
+
+        if (IsAllowed(context, redirectUri))
+        {
+            safeRedirectUri = redirectUri;
+            return true;
+        }
+
+        _logger.LogWarning(
+            "Rejected redirectUri {RedirectUri} on {Path}: not a local path or an allowed origin (Cors:AllowedOrigins)",
+            redirectUri.Length > MaxLoggedLength ? redirectUri[..MaxLoggedLength] + "..." : redirectUri,
+            context.Request.Path);
+        safeRedirectUri = "/";
+        return false;
+    }
+
+    // Backstop for values that were already validated on entry (e.g. carried in the OIDC state): never fails the request.
+    public string Sanitize(HttpContext context, string? redirectUri)
+    {
+        TryGetSafeRedirect(context, redirectUri, out var safeRedirectUri);
+        return safeRedirectUri;
+    }
+
+    // The 400 for a rejected caller-supplied redirectUri. Deliberately neither echoes the value (reflected content)
+    // nor lists the allowed origins.
+    public static IResult RejectedRedirect() => Results.Problem(
+        statusCode: StatusCodes.Status400BadRequest,
+        title: "Invalid redirectUri",
+        detail: "redirectUri must be a local path or an absolute URL on an origin allowed by this BFF.");
 
     public bool IsAllowed(HttpContext context, string? redirectUri)
     {
