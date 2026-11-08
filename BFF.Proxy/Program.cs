@@ -58,6 +58,32 @@ if (cacheMode == SessionCacheMode.InMemory)
     }
 }
 
+if (app.Environment.IsProduction())
+{
+    // AllowedHosts=* accepts any Host header, and the OIDC redirect_uri (and, with ForwardedHeaders:TrustHost,
+    // X-Forwarded-Host) is built from it - only Keycloak's redirect URI check then stands in the way.
+    var allowedHosts = app.Configuration["AllowedHosts"];
+    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Split(';').Any(h => h.Trim() == "*"))
+    {
+        app.Logger.LogWarning(
+            "AllowedHosts is '*' - any Host header is accepted. Set AllowedHosts to this BFF's public host name(s), " +
+            "e.g. AllowedHosts=app.example.com");
+    }
+
+    if (cacheMode == SessionCacheMode.Redis
+        && string.IsNullOrWhiteSpace(app.Configuration["DataProtection:KeysPath"])
+        && string.IsNullOrWhiteSpace(app.Configuration["DataProtection:CertificatePath"]))
+    {
+        app.Logger.LogWarning(
+            "Data Protection keys are stored unencrypted in Redis, next to the session tickets they encrypt. " +
+            "Set DataProtection:CertificatePath (a PFX) to encrypt them, or DataProtection:KeysPath to keep them out of Redis");
+    }
+
+    // Strict-Transport-Security on HTTPS responses (behind a TLS-terminating proxy, enable ForwardedHeaders so
+    // the request is seen as HTTPS). Never in Development: browsers would pin localhost to HTTPS.
+    app.UseHsts();
+}
+
 app.MapDefaultEndpoints();
 
 app.UseWhen(
@@ -87,3 +113,6 @@ app.MapReverseProxy();
 app.MapStaticSpaMounts();
 app.MapSpaFallback();
 app.Run();
+
+// Lets BFF.Proxy.Tests host the app in-process with WebApplicationFactory<Program>.
+public partial class Program;

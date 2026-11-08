@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net.Http.Headers;
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
+using Bff.Proxy.Endpoints;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -23,20 +25,28 @@ public static class BffServiceCollectionExtensions
 {
     public static async Task<SessionCacheMode> AddBffServicesAsync(this WebApplicationBuilder builder)
     {
-        // Required - binding throws at startup if realm/auth-server-url/resource/credentials.secret
-        // are missing from config, instead of silently falling back to a hardcoded realm.
+        // Required - startup fails if realm/auth-server-url/resource/credentials.secret are missing from config,
+        // instead of silently falling back to a hardcoded realm. appsettings.json ships them as empty strings,
+        // which binding accepts, so empty counts as missing.
         builder.Services.AddOptions<KeycloakOptions>()
             .Bind(builder.Configuration.GetSection(KeycloakOptions.SectionName))
+            .Validate(
+                o => !string.IsNullOrWhiteSpace(o.Realm)
+                     && !string.IsNullOrWhiteSpace(o.AuthServerUrl)
+                     && !string.IsNullOrWhiteSpace(o.Resource)
+                     && !string.IsNullOrWhiteSpace(o.Credentials?.Secret),
+                "Keycloak:realm, Keycloak:auth-server-url, Keycloak:resource and Keycloak:credentials:secret must be configured.")
             .ValidateOnStart();
 
         // Several BFF instances (one per SPA) can share a browser host, Redis and a machine's
         // Data Protection key ring. Scope each instance's session state by its Keycloak client so one
         // instance never accepts a session (and tokens) issued to another - cookies are not port-scoped,
         // so on localhost the instances would otherwise read each other's cookie.
-        var instanceId = builder.Configuration[$"{KeycloakOptions.SectionName}:resource"]
-                         ?? throw new InvalidOperationException("Keycloak:resource must be configured.");
+        var instanceId = builder.Configuration[$"{KeycloakOptions.SectionName}:resource"];
+        if (string.IsNullOrWhiteSpace(instanceId))
+            throw new InvalidOperationException("Keycloak:resource must be configured.");
 
-        builder.Services.AddDataProtection().SetApplicationName($"Bff.Proxy:{instanceId}");
+        var dataProtection = builder.Services.AddDataProtection().SetApplicationName($"Bff.Proxy:{instanceId}");
 
         var redisConnectionString = builder.Configuration.GetConnectionString("Redis");
         var cacheMode = string.IsNullOrWhiteSpace(redisConnectionString)
@@ -86,6 +96,13 @@ public static class BffServiceCollectionExtensions
                 options.ConnectionMultiplexerFactory = () => Task.FromResult<IConnectionMultiplexer>(redisConnectionMultiplexer);
                 options.InstanceName = $"BffSessionCache:{instanceId}:";
             });
+
+            // Share the key ring across instances (and keep it across restarts) unless a file path is configured.
+            if (string.IsNullOrWhiteSpace(builder.Configuration["DataProtection:KeysPath"]))
+            {
+                dataProtection.PersistKeysToStackExchangeRedis(
+                    redisConnectionMultiplexer, $"BffDataProtection-Keys:{instanceId}");
+            }
         }
         else
         {
@@ -94,6 +111,12 @@ public static class BffServiceCollectionExtensions
             // across instances, and back-channel logout only affects the local instance's sessions.
             builder.Services.AddDistributedMemoryCache();
         }
+
+        ConfigureDataProtectionKeys(builder, dataProtection);
+
+        builder.Services.AddSingleton<RedirectUriValidator>();
+        builder.Services.AddSingleton<SigningKeyRefresher>();
+        builder.Services.AddSingleton<CachedHealthReport>();
 
         builder.Services.AddSingleton<RedisTicketStore>();
         builder.Services.AddSingleton<ITicketStore>(sp => sp.GetRequiredService<RedisTicketStore>());
@@ -248,7 +271,8 @@ public static class BffServiceCollectionExtensions
                     if (isSilentAttempt)
                     {
                         context.HandleResponse();
-                        context.Response.Redirect(context.Properties?.RedirectUri ?? "/");
+                        var redirectValidator = context.HttpContext.RequestServices.GetRequiredService<RedirectUriValidator>();
+                        context.Response.Redirect(redirectValidator.Sanitize(context.HttpContext, context.Properties?.RedirectUri));
                     }
 
                     return Task.CompletedTask;
@@ -295,18 +319,45 @@ public static class BffServiceCollectionExtensions
             .LoadFromMemory(routes, clusters)
             .AddTransforms(builderContext =>
             {
-                // Intercept every proxied request and attach the Bearer token from the session
+                // The browser's cookies (the BFF session cookie above all, plus the CSRF and OIDC correlation
+                // cookies) are credentials for the BFF, not for the API. Don't hand them to the backend, where
+                // any request logging or a compromised service could replay the session against the BFF.
+                builderContext.AddRequestHeaderRemove("Cookie");
+
+                // Intercept every proxied request and attach the Bearer token from the session. Never let a
+                // client-supplied Authorization header through in its place.
                 builderContext.AddRequestTransform(async transformContext =>
                 {
                     var accessToken = await transformContext.HttpContext.GetTokenAsync("access_token");
-                    if (!string.IsNullOrEmpty(accessToken))
-                    {
-                        transformContext.ProxyRequest.Headers.Authorization =
-                            new AuthenticationHeaderValue("Bearer", accessToken);
-                    }
+                    transformContext.ProxyRequest.Headers.Authorization = string.IsNullOrEmpty(accessToken)
+                        ? null
+                        : new AuthenticationHeaderValue("Bearer", accessToken);
                 });
             });
 
         return cacheMode;
+    }
+
+    // Where the Data Protection key ring lives and how it is protected at rest. The keys decrypt the session
+    // cookie, the OIDC state and the session tickets stored in Redis, so:
+    //  - DataProtection:KeysPath (a shared volume) keeps them out of Redis entirely; otherwise, in Redis mode,
+    //    they are stored in Redis (above) so every instance can read every cookie;
+    //  - DataProtection:CertificatePath (+ CertificatePassword), a PFX, encrypts them at rest. Without it,
+    //    whoever can read the key store can decrypt the tickets (Program.cs warns about this in Production).
+    private static void ConfigureDataProtectionKeys(WebApplicationBuilder builder, IDataProtectionBuilder dataProtection)
+    {
+        var keysPath = builder.Configuration["DataProtection:KeysPath"];
+        if (!string.IsNullOrWhiteSpace(keysPath))
+        {
+            dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
+        }
+
+        var certificatePath = builder.Configuration["DataProtection:CertificatePath"];
+        if (!string.IsNullOrWhiteSpace(certificatePath))
+        {
+            var certificate = X509CertificateLoader.LoadPkcs12FromFile(
+                certificatePath, builder.Configuration["DataProtection:CertificatePassword"]);
+            dataProtection.ProtectKeysWithCertificate(certificate);
+        }
     }
 }

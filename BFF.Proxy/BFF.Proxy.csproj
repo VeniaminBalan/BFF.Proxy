@@ -10,6 +10,7 @@
     <ItemGroup>
         <PackageReference Include="AspNetCore.HealthChecks.Redis"/>
         <PackageReference Include="Microsoft.AspNetCore.Authentication.OpenIdConnect"/>
+        <PackageReference Include="Microsoft.AspNetCore.DataProtection.StackExchangeRedis"/>
         <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis"/>
         <PackageReference Include="OpenTelemetry.Instrumentation.StackExchangeRedis"/>
         <PackageReference Include="Serilog.AspNetCore"/>

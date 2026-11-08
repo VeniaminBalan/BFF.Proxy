@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Reused by docker-publish.yml, so no image is published unless the tests pass.
+  workflow_call:
+
+# Read-only token: this workflow only checks out and builds.
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -12,15 +18,26 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '10.0.x'
 
       - name: Restore
-        run: dotnet restore BFF.Proxy/BFF.Proxy.slnx
+        run: dotnet restore BFF.Proxy.slnx
 
       - name: Build
-        run: dotnet build BFF.Proxy/BFF.Proxy.slnx --no-restore --configuration Release
+        run: dotnet build BFF.Proxy.slnx --no-restore --configuration Release
+
+      # Includes the "Keycloak" category: Testcontainers starts a Phase Two Keycloak on the runner's Docker.
+      - name: Test
+        run: dotnet test BFF.Proxy.slnx --no-build --configuration Release --logger "trx;LogFileName=test-results.trx"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: test-results
+          path: '**/TestResults/*.trx'

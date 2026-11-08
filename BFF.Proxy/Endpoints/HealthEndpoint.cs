@@ -6,10 +6,13 @@ public static class HealthEndpoint
 {
     public static void MapHealthEndpoint(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/bff/health", async (HealthCheckService healthCheckService) =>
+        app.MapGet("/bff/health", async (HttpContext context, CachedHealthReport healthReport) =>
             {
-                var report = await healthCheckService.CheckHealthAsync(check => check.Tags.Contains("ready"));
+                var report = await healthReport.GetAsync(context.RequestAborted);
 
+                // Anonymous endpoint: only names and statuses. Descriptions and exception messages can carry
+                // internal host names, ports and connection details; HealthCheckService already logs them
+                // (Warning for Degraded, Error with the exception for Unhealthy).
                 var response = new
                 {
                     status = report.Status.ToString(),
@@ -18,9 +21,7 @@ public static class HealthEndpoint
                     {
                         name = e.Key,
                         status = e.Value.Status.ToString(),
-                        description = e.Value.Description,
-                        durationMs = e.Value.Duration.TotalMilliseconds,
-                        error = e.Value.Exception?.Message
+                        durationMs = e.Value.Duration.TotalMilliseconds
                     })
                 };
 
