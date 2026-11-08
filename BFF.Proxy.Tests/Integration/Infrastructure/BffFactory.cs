@@ -12,17 +12,22 @@ public sealed record KeycloakConnection(string AuthServerUrl, string Realm, stri
 
 // Hosts the real Program in-process. Every Keycloak/backend setting is overridden, so nothing in
 // appsettings.{Environment}.json (e.g. a developer's real Keycloak) is ever contacted.
+// An override with a null value removes that default, leaving the key to the app's own appsettings files.
+// contentRoot replaces the project directory (appsettings*.json and wwwroot are read from there).
 public sealed class BffFactory(
     KeycloakConnection keycloak,
     string backendUrl,
     string environment = "Development",
-    IReadOnlyDictionary<string, string?>? overrides = null) : WebApplicationFactory<Program>
+    IReadOnlyDictionary<string, string?>? overrides = null,
+    string? contentRoot = null) : WebApplicationFactory<Program>
 {
     public const string SpaOrigin = "https://spa.example.test";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment(environment);
+        if (contentRoot is not null)
+            builder.UseContentRoot(contentRoot);
 
         var settings = new Dictionary<string, string?>
         {
@@ -39,7 +44,10 @@ public sealed class BffFactory(
             settings[key] = value;
 
         foreach (var (key, value) in settings)
-            builder.UseSetting(key, value);
+        {
+            if (value is not null)
+                builder.UseSetting(key, value);
+        }
 
         builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, TestSignInStartupFilter>());
     }

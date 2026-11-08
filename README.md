@@ -467,7 +467,7 @@ every session ticket and has no password); use `docker compose exec redis redis-
 | Category | What it runs | Needs |
 |---|---|---|
 | `Unit` | Redirect validation, CSRF comparison, `RedisTicketStore` encryption and sid index | nothing |
-| `Integration` | The real app in-process (`WebApplicationFactory`) against a fake Keycloak and backend (WireMock): login/logout, CSRF, proxy transforms, token refresh, back-channel logout with forged tokens, org switching, Production cookie/HSTS/host rules | nothing |
+| `Integration` | The real app in-process (`WebApplicationFactory`) against a fake Keycloak and backend (WireMock): login/logout, CSRF, proxy transforms, token refresh, back-channel logout with forged tokens, org switching, Production cookie/HSTS/host rules, and every `samples/` layout (same-origin SPA, multi-SPA mounts, split-origin CORS, baked-in `appsettings.Production.json`) built from the samples' real files | nothing |
 | `Keycloak` | End to end against a real Phase Two Keycloak (Testcontainers, realm from `BFF.Proxy.Tests/Keycloak/bff-test-realm.json`): browserless login, refresh, silent SSO, RP and back-channel logout, organizations | Docker |
 
 ```bash

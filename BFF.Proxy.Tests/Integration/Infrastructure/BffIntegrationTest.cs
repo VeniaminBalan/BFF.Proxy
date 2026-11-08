@@ -16,14 +16,25 @@ public abstract class BffIntegrationTest
     protected virtual string Environment => "Development";
     protected virtual IReadOnlyDictionary<string, string?> Settings => new Dictionary<string, string?>();
 
+    // null = the BFF.Proxy project directory. Called once, before the host is created.
+    protected virtual string? CreateContentRoot() => null;
+
     private readonly List<IDisposable> _disposables = [];
+    private readonly List<IDisposable> _fixtureDisposables = [];
+
+    // Disposed after the BFF host has stopped (e.g. a temp content root it was serving files from).
+    protected T DisposeAfterFixture<T>(T disposable) where T : IDisposable
+    {
+        _fixtureDisposables.Add(disposable);
+        return disposable;
+    }
 
     [OneTimeSetUp]
     public void StartBff()
     {
         Keycloak = new FakeKeycloak();
         Backend = WireMockServer.Start();
-        Factory = new BffFactory(Keycloak.Connection, Backend.Url!, Environment, Settings);
+        Factory = new BffFactory(Keycloak.Connection, Backend.Url!, Environment, Settings, CreateContentRoot());
     }
 
     [SetUp]
@@ -50,6 +61,8 @@ public abstract class BffIntegrationTest
         Backend.Stop();
         Backend.Dispose();
         Keycloak.Dispose();
+        foreach (var disposable in _fixtureDisposables)
+            disposable.Dispose();
     }
 
     protected BffClient AnonymousClient(string baseAddress = "https://localhost")
